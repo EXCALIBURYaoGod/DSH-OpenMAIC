@@ -1,0 +1,53 @@
+{
+  "defaultProvider": "doubao",
+  "providers": {
+    "deepseek": {
+      "displayName": "DeepSeek",
+      "api": "openai-completions",
+      "baseURL": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "timeoutMs": 120000,
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "name": "DeepSeek Chat",
+          "description": "通用对话模型，速度快，适合课程大纲/测验/量规生成",
+          "contextWindow": 65536,
+          "maxTokens": 8192
+        },
+        {
+          "id": "deepseek-reasoner",
+          "name": "DeepSeek Reasoner",
+          "description": "推理模型，适合结构化讲解与评分",
+          "contextWindow": 65536,
+          "maxTokens": 8192
+        }
+      ]
+    },
+    "doubao": {
+      "displayName": "火山方舟（豆包）",
+      "api": "openai-completions",
+      "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
+      "apiKeyEnv": "DOUBAO_LLM_API_KEY",
+      "timeoutMs": 180000,
+      "extraBody": {
+        "thinking": { "type": "disabled" }
+      },
+      "models": [
+        {
+          "id": "doubao-seed-2-1-pro-260628",
+          "name": "Doubao Seed 2.1 Pro",
+          "description": "火山方舟豆包模型，OpenAI 兼容接口；已关闭思维链以缩短首字延迟",
+          "maxTokens": 2048
+        }
+      ]
+    },
+    "mock": {
+      "displayName": "本地 Mock（无需 Key）",
+      "api": "mock",
+      "models": [
+        { "id": "mock-teacher", "name": "Mock Teacher", "contextWindow": 32000, "maxTokens": 4096 }
+      ]
+    }
+  }
+}

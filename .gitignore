@@ -1,0 +1,13 @@
+# 根级依赖与缓存（嵌套子项目各自保留其 .gitignore 规则）
+node_modules/
+.pnpm-store/
+.trae/
+
+# 嵌套仓库 git 历史备份（不移除文件本身，仅不入库）
+deepseek-harness/.git.bak/
+OpenMAIC/.git.bak/
+edu-loop-mvp/.git.bak/
+
+# 根级环境与日志兜底
+.env
+*.log

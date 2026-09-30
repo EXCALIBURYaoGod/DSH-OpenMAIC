@@ -1,0 +1,10 @@
+packages:
+  - 'server'
+  - 'web'
+
+# pnpm 10+ 默认不执行依赖的构建脚本，未获批准的包会让安装直接失败（strictDepBuilds）。
+# esbuild 的 postinstall 用于校验/落地平台二进制，vue-demi 的 postinstall 用于切换 Vue 版本，
+# 两者都是 Vite + Vue3 工程的标准依赖，这里显式放行。
+allowBuilds:
+  esbuild: true
+  vue-demi: true

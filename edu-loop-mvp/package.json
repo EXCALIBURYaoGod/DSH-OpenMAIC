@@ -1,0 +1,14 @@
+{
+  "name": "edu-loop-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "教学闭环最小 MVP：主题/资料 → 结构化课程与讲解 → 测验 → 间隔重复复习 → 评估量规",
+  "packageManager": "pnpm@12.4.2",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:server": "pnpm --filter @edu-loop/server run dev",
+    "dev:web": "pnpm --filter @edu-loop/web run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck"
+  }
+}
