@@ -20,30 +20,38 @@ const current = computed(() => slides.value[slideIndex.value] ?? null)
 
 watch(
   () => props.deck,
-  () => {
+  async () => {
     slideIndex.value = 0
+    // deck 到位时容器可能尚未渲染（watcher 默认在 DOM 更新前触发），
+    // 必须等下一帧再画，否则首屏是一块空白。
+    await nextTick()
     paint()
   },
 )
 
 let root: { unmount: () => void } | null = null
+let rootEl: HTMLElement | null = null
 let _rootRender: ((slide: SlideDeck['slides'][number]) => void) | null = null
 
 /**
- * 在当前容器上渲染某页。React root 惰性创建且只创建一次，后续 root.render 原地
- * 更新——必须在容器确定挂载于 DOM 时（模板的 v-else 分支）才调用。
+ * 在当前容器上渲染某页。React root 惰性创建，并在容器元素变化时重新绑定——
+ * 容器被 v-if 分支重建后，旧 root 已脱离 DOM，继续 render 不会显示任何内容。
  */
 function paint(): void {
-  if (container.value === null || current.value === null) return
+  const el = container.value
+  const slide = current.value
+  if (el === null || slide === null) return
   const api = reactApi
   if (api === null) return
-  if (root === null) {
-    const r = api.createRoot(container.value)
+  if (root === null || rootEl !== el) {
+    root?.unmount()
+    const r = api.createRoot(el)
     root = { unmount: () => r.unmount() }
-    _rootRender = (slide) => r.render(api.createElement(api.SlideCanvas, { slide, chrome: false }))
+    rootEl = el
+    _rootRender = (s) => r.render(api.createElement(api.SlideCanvas, { slide: s, chrome: false }))
   }
   if (_rootRender === null) return
-  _rootRender(current.value)
+  _rootRender(slide)
 }
 
 /** React 模块句柄（一次性加载）。 */
@@ -95,6 +103,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   root?.unmount()
   root = null
+  rootEl = null
 })
 
 watch(slideIndex, () => paint())
