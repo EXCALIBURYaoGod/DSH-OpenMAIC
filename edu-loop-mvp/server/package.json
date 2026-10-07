@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "@openmaic/dsl": "file:../../OpenMAIC/packages/@openmaic/dsl",
     "cors": "^2.8.5",
     "express": "^4.21.2"

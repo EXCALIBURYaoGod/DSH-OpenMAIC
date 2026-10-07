@@ -14,8 +14,7 @@
  * @module plugins/openmaic-generation
  */
 
-import type { Context } from '../../core/context.js'
-import type { Plugin } from '../../core/plugin.js'
+import type { Context } from '@deepseek-ai/cordis'
 import type { LoadedLlm } from '../../llm/loader.js'
 import { assembleStream } from '../../llm/registry.js'
 
@@ -75,6 +74,13 @@ export interface OpenmaicGenerationService {
   ): Promise<GenerationResult<GeneratedOutline>>
   /** 第二阶段：outline + 讲解内容 → 完整场景文档。 */
   buildCompleteScene(outline: SceneOutline, content: string): CompleteScene
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** 两阶段生成管线（outline → complete scene）。 */
+    'openmaic.generation': OpenmaicGenerationService
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +169,7 @@ function normalizeMockOutline(data: Record<string, unknown>, input: SceneGenerat
 }
 
 // ---------------------------------------------------------------------------
-// 插件
+// 插件（Cordis 原生：命名导出 name / provide / inject / apply）
 // ---------------------------------------------------------------------------
 
 export interface GenerationConfig {
@@ -171,90 +177,89 @@ export interface GenerationConfig {
   forceMock?: boolean
 }
 
-export const openmaicGenerationPlugin: Plugin<GenerationConfig> = {
-  name: 'openmaic:generation',
-  inject: ['llm'],
-  provide: 'openmaic.generation',
-  apply(ctx: Context, config?: GenerationConfig) {
-    const loaded = ctx.get<LoadedLlm>('llm')
-    const forceMock = config?.forceMock ?? false
-    // 以默认路由是否被 mock 顶替为「真实 LLM」信号；降级 provider 越多越可能为 mock。
-    const source: OpenmaicGenerationService['source'] =
-      forceMock || loaded.degradedProviders.has(loaded.defaultProvider) ? 'mock' : 'llm'
+export const name = 'openmaic:generation'
+export const inject = ['llm']
+export const provide = 'openmaic.generation'
 
-    const aiCall = makeAiCall(loaded)
+export function apply(ctx: Context, config: GenerationConfig = {}): () => void {
+  const loaded = ctx.get('llm')! as LoadedLlm
+  const forceMock = config.forceMock ?? false
+  // 以默认路由是否被 mock 顶替为「真实 LLM」信号；降级 provider 越多越可能为 mock。
+  const source: OpenmaicGenerationService['source'] =
+    forceMock || loaded.degradedProviders.has(loaded.defaultProvider) ? 'mock' : 'llm'
 
-    const service: OpenmaicGenerationService = {
-      available: source === 'llm',
-      source,
-      async generateSceneOutlinesFromRequirements(input) {
-        try {
-          // 强制 mock 或确认降级态时：直接走内置生成器，避免无效调用。
-          if (source === 'mock') {
-            const data = builtinOutline(input)
-            return { success: true, data }
-          }
+  const aiCall = makeAiCall(loaded)
 
-          const systemPrompt =
-            '你是资深教学设计专家。请把用户需求拆解为一门课程的多页大纲。' +
-            '只用 JSON 输出，不要附加任何解释或代码围栏。'
-          const userPrompt =
-            `[[task:course_outline]]\n主题：${input.topic}` +
-            (input.learningGoals ? `\n学习目标：${input.learningGoals}` : '') +
-            (input.language ? `\n语言：${input.language}` : '')
-
-          const raw = await aiCall(systemPrompt, userPrompt)
-          const parsed = extractJson<Record<string, unknown>>(raw)
-          // 模型可能直接返回统一契约（有 outlines），也可能是 mock 风格（有 lessons）。
-          const data: GeneratedOutline = parsed && Array.isArray(parsed.outlines)
-            ? {
-                courseTitle: typeof parsed.courseTitle === 'string' ? parsed.courseTitle : input.topic,
-                languageDirective: typeof parsed.languageDirective === 'string' ? parsed.languageDirective : input.language,
-                outlines: (parsed.outlines as unknown[]).map((o, order) => {
-                  const rec = o as Record<string, unknown>
-                  return {
-                    type: 'slide' as const,
-                    title: String(rec.title ?? `第 ${order + 1} 页`),
-                    description: typeof rec.description === 'string' ? rec.description : undefined,
-                    keyPoints: Array.isArray(rec.keyPoints)
-                      ? (rec.keyPoints as string[])
-                      : ['要点 1', '要点 2', '要点 3'],
-                    order,
-                  }
-                }),
-              }
-            : parsed
-              ? normalizeMockOutline(parsed, input)
-              : builtinOutline(input) // 严格解析失败也回退，保证闭环可跑。
+  const service: OpenmaicGenerationService = {
+    available: source === 'llm',
+    source,
+    async generateSceneOutlinesFromRequirements(input) {
+      try {
+        // 强制 mock 或确认降级态时：直接走内置生成器，避免无效调用。
+        if (source === 'mock') {
+          const data = builtinOutline(input)
           return { success: true, data }
-        } catch (error) {
-          return { success: false, error: error instanceof Error ? error.message : String(error) }
         }
-      },
-      buildCompleteScene(outline, content) {
-        return {
-          id: `scene-${outline.order}`,
-          title: outline.title,
-          order: outline.order,
-          desc: content,
-          content: { type: 'slide' },
-        }
-      },
-    }
 
-    ctx.service('openmaic.generation', service, 'openmaic:generation')
+        const systemPrompt =
+          '你是资深教学设计专家。请把用户需求拆解为一门课程的多页大纲。' +
+          '只用 JSON 输出，不要附加任何解释或代码围栏。'
+        const userPrompt =
+          `[[task:course_outline]]\n主题：${input.topic}` +
+          (input.learningGoals ? `\n学习目标：${input.learningGoals}` : '') +
+          (input.language ? `\n语言：${input.language}` : '')
 
-    if (source === 'mock') {
-      console.warn('[openmaic] generation 未接入真实模型凭据，降级为内置 outline 生成器（不阻断闭环）。')
-    }
+        const raw = await aiCall(systemPrompt, userPrompt)
+        const parsed = extractJson<Record<string, unknown>>(raw)
+        // 模型可能直接返回统一契约（有 outlines），也可能是 mock 风格（有 lessons）。
+        const data: GeneratedOutline = parsed && Array.isArray(parsed.outlines)
+          ? {
+              courseTitle: typeof parsed.courseTitle === 'string' ? parsed.courseTitle : input.topic,
+              languageDirective: typeof parsed.languageDirective === 'string' ? parsed.languageDirective : input.language,
+              outlines: (parsed.outlines as unknown[]).map((o, order) => {
+                const rec = o as Record<string, unknown>
+                return {
+                  type: 'slide' as const,
+                  title: String(rec.title ?? `第 ${order + 1} 页`),
+                  description: typeof rec.description === 'string' ? rec.description : undefined,
+                  keyPoints: Array.isArray(rec.keyPoints)
+                    ? (rec.keyPoints as string[])
+                    : ['要点 1', '要点 2', '要点 3'],
+                  order,
+                }
+              }),
+            }
+          : parsed
+            ? normalizeMockOutline(parsed, input)
+            : builtinOutline(input) // 严格解析失败也回退，保证闭环可跑。
+        return { success: true, data }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+    buildCompleteScene(outline, content) {
+      return {
+        id: `scene-${outline.order}`,
+        title: outline.title,
+        order: outline.order,
+        desc: content,
+        content: { type: 'slide' },
+      }
+    },
+  }
 
-    return () => {
-      console.log(`[openmaic] generation 插件停止（source=${service.source}）`)
-    }
-  },
+  ctx.provide('openmaic.generation', service)
+
+  if (source === 'mock') {
+    console.warn('[openmaic] generation 未接入真实模型凭据，降级为内置 outline 生成器（不阻断闭环）。')
+  }
+
+  return () => {
+    console.log(`[openmaic] generation 插件停止（source=${service.source}）`)
+  }
 }
 
 /** 便捷读取。 */
 export function useOpenmaicGeneration(ctx: Context): OpenmaicGenerationService {
-  return ctx.get<OpenmaicGenerationService>('openmaic.generation')
+  return ctx.get('openmaic.generation')!
 }

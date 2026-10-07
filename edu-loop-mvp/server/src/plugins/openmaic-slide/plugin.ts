@@ -10,10 +10,7 @@
  * @module plugins/openmaic-slide
  */
 
-import type { Context } from '../../core/context.js'
-import type { Plugin } from '../../core/plugin.js'
-import type { LoadedLlm } from '../../llm/loader.js'
-import type { Repository } from '../../db/repo.js'
+import type { Context } from '@deepseek-ai/cordis'
 import type { OpenmaicLayoutService, LayoutPage } from '../openmaic-layout/plugin.js'
 
 /** 服务对外暴露的能力。 */
@@ -28,6 +25,13 @@ export interface OpenmaicSlideService {
   generateSlideJson(input: SlideInput): SlideDeck
   /** 结构校验（接入真实 dsl 时用 dsl 的 validateStage；降级用内置宽松断言）。 */
   validate(deck: SlideDeck): { valid: boolean; issues?: string[] }
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** 课程要点 → slide JSON 生成与校验服务。 */
+    'openmaic.slide': OpenmaicSlideService
+  }
 }
 
 export interface SlideInput {
@@ -306,60 +310,62 @@ function buildDeckDsl(dsl: LoadedDsl): (input: SlideInput) => SlideDeck {
   }
 }
 
-export const openmaicSlidePlugin: Plugin = {
-  name: 'openmaic:slide',
-  inject: ['llm', 'repo'],
-  provide: 'openmaic.slide',
-  async apply(ctx: Context) {
-    const llm = ctx.get<LoadedLlm>('llm')
-    const repo = ctx.get<Repository>('repo')
-    void llm
-    void repo
+// ---------------------------------------------------------------------------
+// 插件（Cordis 原生：命名导出 name / provide / inject / apply）
+// ---------------------------------------------------------------------------
 
-    const dsl = await tryLoadOpenmaic()
-    // 优先消费 openmaic.layout 服务（完整 PPT 布局生成器）；缺失时降级 dsl/内置。
-    const layout = ctx.getOrNull<OpenmaicLayoutService>('openmaic.layout') ?? null
+export const name = 'openmaic:slide'
+export const inject = ['llm', 'repo']
+export const provide = 'openmaic.slide'
 
-    // 接入真实 @openmaic/dsl：产出符合 dsl Stage/Scene 契约的文档并用其校验。
-    const generate = layout
-      ? (input: SlideInput): SlideDeck => buildDeckWithLayout(layout, input)
-      : dsl
-        ? buildDeckDsl(dsl)
-        : buildDeckBuiltin
-    const validate = dsl
-      ? (deck: SlideDeck): { valid: boolean; issues?: string[] } => {
-          const result = dsl.validateStage(deck)
-          return result.valid
-            ? { valid: true }
-            : { valid: false, issues: result.errors.map((e) => `${e.path}: ${e.message}`) }
-        }
-      : validateDeck
+export async function apply(ctx: Context): Promise<() => void> {
+  // 依赖由 Cordis 经 inject 保障：进入 apply 时 llm / repo 已就绪。
+  void ctx.get('llm')
+  void ctx.get('repo')
 
-    const service: OpenmaicSlideService = {
-      available: dsl !== null,
-      source: dsl ? 'openmaic' : 'builtin-fallback',
-      dslVersion: dsl?.DSL_VERSION ?? null,
-      generateSlideJson(input) {
-        return generate(input)
-      },
-      validate(deck) {
-        return validate(deck)
-      },
-    }
+  const dsl = await tryLoadOpenmaic()
+  // 优先消费 openmaic.layout 服务（完整 PPT 布局生成器）；缺失时降级 dsl/内置。
+  const layout = ctx.get('openmaic.layout') ?? null
 
-    ctx.service('openmaic.slide', service, 'openmaic:slide')
+  // 接入真实 @openmaic/dsl：产出符合 dsl Stage/Scene 契约的文档并用其校验。
+  const generate = layout
+    ? (input: SlideInput): SlideDeck => buildDeckWithLayout(layout, input)
+    : dsl
+      ? buildDeckDsl(dsl)
+      : buildDeckBuiltin
+  const validate = dsl
+    ? (deck: SlideDeck): { valid: boolean; issues?: string[] } => {
+        const result = dsl.validateStage(deck)
+        return result.valid
+          ? { valid: true }
+          : { valid: false, issues: result.errors.map((e) => `${e.path}: ${e.message}`) }
+      }
+    : validateDeck
 
-    if (!dsl) {
-      console.warn('[openmaic] 未解析到 @openmaic/dsl 产物，slide 能力降级为内置生成器（不阻断闭环）。')
-    }
+  const service: OpenmaicSlideService = {
+    available: dsl !== null,
+    source: dsl ? 'openmaic' : 'builtin-fallback',
+    dslVersion: dsl?.DSL_VERSION ?? null,
+    generateSlideJson(input) {
+      return generate(input)
+    },
+    validate(deck) {
+      return validate(deck)
+    },
+  }
 
-    return () => {
-      console.log(`[openmaic] slide 插件停止（source=${service.source}）`)
-    }
-  },
+  ctx.provide('openmaic.slide', service)
+
+  if (!dsl) {
+    console.warn('[openmaic] 未解析到 @openmaic/dsl 产物，slide 能力降级为内置生成器（不阻断闭环）。')
+  }
+
+  return () => {
+    console.log(`[openmaic] slide 插件停止（source=${service.source}）`)
+  }
 }
 
 /** 便捷读取（可能降级，调用方需看 available）。 */
 export function useOpenmaicSlide(ctx: Context): OpenmaicSlideService {
-  return ctx.get<OpenmaicSlideService>('openmaic.slide')
+  return ctx.get('openmaic.slide')!
 }

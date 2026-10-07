@@ -43,7 +43,7 @@
 | --- | --- | --- |
 | G1 | **无 Key 也能完整跑通闭环** | 确定性 mock 适配器 + `degraded` 标记 |
 | G2 | **配置驱动接入任意 OpenAI 兼容端点** | `llm.config.json` provider profile，不改业务代码 |
-| G3 | **架构对齐 DSH，但不引 DSH 运行时依赖** | 自研最小 Cordis 内核 + 裁剪版 LLM 契约 |
+| G3 | **架构对齐 DSH：内核同源、业务契约裁剪对齐** | 内核直接采用 `@deepseek-ai/cordis`（与 DSH 同源）；LLM 契约按需裁剪复刻 |
 | G4 | **闭环状态可持久化、可回放** | SQLite 9 张表，全链路落库 |
 | G5 | **开发/生产两模式语义清晰** | `AppMode` 单点解析，跨域/托管/接口门禁统一受控 |
 | G6 | **模型输出作为不可信输入处理** | 零依赖 Markdown 白名单渲染 + 长度截断 |
@@ -77,10 +77,10 @@
 │  ├───────────────────────────────────────────────────────┤  │
 │  │ db/        持久层：sqlite / schema / Repository        │  │
 │  ├───────────────────────────────────────────────────────┤  │
-│  │ core/      内核：context / plugin / kernel / errors     │  │
+│  │ 内核：@deepseek-ai/cordis 原生（无本地 core/ 实现）      │  │
 │  └───────────────────────────────────────────────────────┘  │
 │  plugins/  openmaic-slide / -layout / -storage /            │
-│            -generation / -tts-asr                           │
+│            -generation / -tts-asr（均为 Cordis 原生插件）    │
 └───────────────────────────┬─────────────────────────────────┘
                             │
         ┌───────────────────┴───────────────────┐
@@ -100,6 +100,7 @@
 | UI | Element Plus | 表单/步骤条/卡片开箱可用，减少自研成本 |
 | 状态 | Pinia | 与 Vue3 原生契合；单 store 承载闭环状态 |
 | 后端 | Node + Express | SSE 与路由模型简单，无框架黑盒 |
+| 内核 | `@deepseek-ai/cordis` + `@deepseek-ai/schemastery` | 直接采用 DSH 同源的 Cordis 原生内核，不再自研；配置经 Standard Schema 校验 |
 | 流式 | **SSE**（非 WebSocket） | 教学场景是「一问一答的流式文本」，单向推送足够；浏览器侧仅需 `fetch` + `ReadableStream`，无额外依赖 |
 | 存储 | `node:sqlite`（内置） | **零原生依赖、免编译**，规避 better-sqlite3 的 node-gyp 风险 |
 | 包管理 | pnpm workspace | 前后端同仓分治 |
@@ -110,49 +111,62 @@
 
 ## 4. 内核与插件化装配机制
 
-这是本方案对齐 DSH「一切皆插件」理念的核心实现，位于 `server/src/core/`，共四个文件、约 300 行。
+内核**不再自研**，而是直接采用与 DSH 同源的 **Cordis**（`@deepseek-ai/cordis`），配置校验使用同源的 `@deepseek-ai/schemastery`。此前那份「仿 Cordis」的裁剪实现（`server/src/core/`：context / plugin / kernel / errors，约 300 行）已在本次改造中整体删除，改由 Cordis 原生承担。
 
-### 4.1 插件契约
+### 4.1 插件形态：模块即插件（DSH 范式）
+
+每个插件是一个 ES 模块，用**命名导出**声明元数据，**不写 `default export`**。于是 `import * as xPlugin from './x/plugin.js'` 得到的模块命名空间本身就是一个合法插件对象（Cordis 判定「有 `apply` 方法的对象」即为插件），直接交给 `root.plugin()` 装载。
 
 ```ts
-// server/src/core/plugin.ts
-export interface Plugin<T = Record<string, unknown>> {
-  name: string                              // 展示名，用于诊断与日志
-  Config?: ConfigValidator<T>               // 配置校验器
-  inject?: string[]                         // 依赖的服务名
-  provide?: string | string[]               // 提供的服务名
-  apply: (ctx: Context, config: T) =>
-    void | (() => void) | Promise<void | (() => void)>   // 返回 disposer
+// 以 server/src/llm/plugin.ts 为例
+export const name = 'edu-loop:llm'            // 展示名 / fiber 诊断名
+export const provide = 'llm'                  // 提供的服务名
+export const Config = z.object({ /* ... */ }) // schemastery（Standard Schema）校验器
+export function apply(ctx: Context, config: Config): () => void {
+  const loaded = loadLlm(config)
+  ctx.provide('llm', loaded)                  // 注册服务，返回 disposer
+  return () => { /* 释放引用；服务本体由 fiber 回收 */ }
 }
 ```
 
-`apply` 返回 disposer 是生命周期管理的支点：插件卸载时调用它释放适配器、关闭数据库、取消订阅。
+元数据字段与 Cordis 的 `Plugin.Base` 一一对应：`name`（诊断名）、`Config`（Standard Schema 校验器）、`inject`（依赖服务）、`provide`（所提供服务的声明）。`apply` 的返回值是可选 disposer，用于释放**非服务类**资源（如 SQLite 连接、适配器引用）。
 
-### 4.2 上下文（服务容器 + 事件总线）
+### 4.2 上下文（服务容器 + 反射层 + 事件总线）
 
-`Context`（`server/src/core/context.ts`）提供四项核心能力：
+`Context` 是一个 **Proxy**，属性读取经 `ctx.reflect`（`ReflectService`）解析。项目实际用到的能力：
 
 | 能力 | 签名 | 说明 |
 | --- | --- | --- |
-| 注册服务 | `service(name, value, providedBy?)` | 重名抛 `DUPLICATE_SERVICE` |
-| 精确删除 | `unservice(name, expectedValue)` | **按值比对**后删除，避免误删被后续插件覆盖的同名服务 |
-| 读取服务 | `get` / `getOrNull` / `require` | `get` 未注册抛 `MISSING_DEPENDENCY` |
-| 事件总线 | `on` / `once` / `emit` | 监听器抛错不阻断其余监听器（非否决性） |
+| 注册服务 | `ctx.provide(name, value)` | 归属当前 fiber；重名抛错；返回 disposer |
+| 读取服务 | `ctx.get(name, strict?)` | `strict` 默认 `true`，只返回「提供方 fiber 仍活跃」的实现 |
+| 覆写服务值 | `ctx.set(name, value)` | 仅允许提供该服务的 fiber 覆写 |
+| 声明依赖 | `inject` 元数据 | 依赖未满足时插件不加载，满足后自动加载 |
+| 事件总线 | `ctx.on` / `ctx.emit` | 由 `ctx.events` 经 mixin 暴露到 `ctx` 上 |
 
-另提供 `ctx.proxy`：通过 `Proxy` 让 `ctx.db` 等价于 `ctx.get('db')`，提升插件内可读性。
+每个插件还会按需做 **Context 类型增强**，把服务挂到 `Context` 接口上。例如 llm 插件：
 
-### 4.3 装配语义：「全有或全无」
+```ts
+declare module '@deepseek-ai/cordis' {
+  interface Context { llm: LoadedLlm }
+}
+```
 
-`createKernel()` 的 `plugin()` 方法按四步执行，**任一前置校验失败即整体拒绝，不留下任何半成品注册**：
+由此 `ctx.get('llm')` 与 `ctx.llm` 都获得静态类型——等价于旧实现里手写的服务契约，但不需维护运行时字符串表。
 
-1. **配置合并与校验** —— 未传 config 时取 `defaultConfig`；有 `Config` 校验器则执行，不过则 `INVALID_CONFIG`。
-2. **依赖校验** —— 遍历 `inject`，任一服务缺失即 `MISSING_DEPENDENCY`（由装配顺序保障）。
-3. **占用校验** —— 遍历 `provide`，任一目标名已被占用即 `DUPLICATE_SERVICE`。
-4. **应用与回滚** —— 执行 `apply`；若中途抛错，回滚本插件已新增的服务；成功则记录 disposer 与所提供服务的值快照，供卸载时精准释放。
+### 4.3 装配语义：依赖驱动的响应式加载
+
+与旧实现「一次性校验 + 失败回滚」不同，Cordis 的装配是**响应式**的：
+
+- `root.plugin(plugin, config)` 返回 `Fiber & PromiseLike<Fiber>`；`await` 之后表示装载完成（配置错误或启动错误会 reject）。
+- 插件声明 `inject` 时，**只有全部依赖服务可用才会加载**；当某个依赖服务发生变化（重新注册 / 注销），依赖它的 fiber 会自动卸载并按需重新 `apply`。
+- 配置在 `apply` **之前**经 `Config`（Standard Schema）校验，缺省字段按 schema 回填。
+- 服务的生命周期绑定到**提供它的 fiber**：fiber 卸载即自动注销服务并唤醒依赖方，无需手写回滚逻辑。
+
+由此得到的性质：**顺序写错不再只靠启动期报错兜底，而是「依赖未满足就不加载」——不会出现运行期空引用。**
 
 ### 4.4 启动装配顺序与服务拓扑
 
-`server/src/index.ts` 中的加载顺序为 **llm → db → openmaic(storage/generation/layout/slide/audio) → http**：
+`server/src/index.ts` 以 `new Context()` 为根容器，加载顺序为 **llm → db → openmaic(storage/generation/layout/slide/audio) → http**：
 
 | 顺序 | 插件名 | inject | provide（服务） |
 | --- | --- | --- | --- |
@@ -163,15 +177,18 @@ export interface Plugin<T = Record<string, unknown>> {
 | 5 | `openmaic:layout` | — | `openmaic.layout` |
 | 6 | `openmaic:slide` | `llm`、`repo` | `openmaic.slide` |
 | 7 | `openmaic:audio` | — | `openmaic.tts`、`openmaic.asr` |
-| 8 | `edu-loop:http` | `llm`、`repo`、`kernel` | `app` |
+| 8 | `edu-loop:http` | `llm`、`repo` | `app` |
 
-另有内建服务：内核自身以 `kernel` 名注册（供 `/api/plugins` 输出诊断拓扑）。
-
-该顺序的正确性由契约保证而非约定：`openmaic:storage` 必须在 `edu-loop:db` 之后（依赖 `db`），`openmaic:slide` 必须在 `edu-loop:llm` / `edu-loop:db` 之后，`edu-loop:http` 必须在全部业务插件之后（依赖 `llm`、`repo`）。**顺序写错会在启动期直接报错，而不是运行期出现空引用。**
+拓扑正确性由 `inject` 声明保证：`openmaic:storage` 依赖 `db`，`openmaic:slide` 依赖 `llm` / `repo`，`edu-loop:http` 依赖 `llm` / `repo`。**依赖不满足的插件不会被加载**，因此 `index.ts` 的书写顺序只需保证依赖先到，语义上不构成隐式约定。（`http` 插件不再需要内建的 `kernel` 服务。）
 
 ### 4.5 装配成果的可观测性
 
-`GET /api/plugins` 实时输出「已加载插件名 + 服务拓扑（含提供方与可用性）」，等价于一个轻量的运行时架构自检接口。
+`GET /api/plugins` 直接读取 Cordis 的两处内部结构，无需任何额外服务：
+
+- **已加载插件**：`ctx.registry.values()` → 每个插件运行时记录的 `name`。
+- **已注册服务**：`ctx.reflect.store`（`Dict<Impl>`）→ 每项的 `name`、`fiber.name`（提供方插件名）、`value` 是否可用。
+
+因此该接口等价于一个轻量的运行时架构自检。
 
 ---
 
@@ -645,15 +662,16 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 ## 13. 与 DSH / OpenMAIC 的结合关系
 
-### 13.1 结合形态：架构同构、依赖解耦
+### 13.1 结合形态：内核同源、业务契约对齐
 
-本项目的结合是**契约级对齐**，而非代码级依赖。`server/package.json` 的运行时依赖只有 `express`、`cors` 与 `@openmaic/dsl`，**没有引入任何 `@deepseek-ai/*` 包**。
+本项目的结合是**内核直接采用 + 契约级对齐**。`server/package.json` 的运行时依赖为 `express`、`cors`、`@openmaic/dsl`，以及 DSH 同源的 `@deepseek-ai/cordis` 与 `@deepseek-ai/schemastery`——**内核与配置校验已改为直接使用 DSH 的原生实现，其余业务契约仍按需裁剪复刻**。
 
 | DSH 侧契约 | 本项目落点 | 对齐程度 |
 | --- | --- | --- |
-| Cordis `Context`（DI + 事件总线） | `core/context.ts` | 核心能力对齐，裁剪到最小 |
-| 「一切皆插件」`inject`/`provide`/`apply`/disposer | `core/plugin.ts` | 契约对齐，并支持异步 `apply` |
-| 全有或全无的装配语义 | `core/kernel.ts` | 对齐（含失败回滚） |
+| Cordis `Context`（DI + 反射 + 事件总线） | 直接使用 `@deepseek-ai/cordis` | **原生采用**（不再是复刻） |
+| 「一切皆插件」`inject`/`provide`/`Config`/`apply`/disposer | 各插件模块的命名导出 | 原生契约 |
+| 依赖驱动的响应式装配与 fiber 级生命周期 | Cordis `registry` / `reflect` | 原生契约 |
+| `@deepseek-ai/schemastery` 配置校验 | 各插件的 `Config` 导出 | **原生采用** |
 | `@deepseek-ai/dsh-llm` 适配器契约 | `llm/types.ts` | 刻意对齐，差异显式声明 |
 | `LlmRuntime` provider 注册表 | `llm/registry.ts` | 保留最小子集 |
 | `PiAiProviderProfile` 字段命名 | `llm/config.ts` | 对齐（含 `apiKeyEnv` 凭据引用约定） |
@@ -675,6 +693,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 | 项 | DSH | 本项目 | 理由 |
 | --- | --- | --- | --- |
+| 内核 | `@deepseek-ai/cordis`（自带） | **同一实现（直接依赖）** | 从「复刻」升级为「同源」，换取契约完全一致 |
 | `RequestMessage.content` | 内容块数组 | **纯文本字符串** | 一对一教学场景用不到多模态内容块 |
 | `toolHistory` / `reasoningEffort` / `purpose` | 具备 | 省略 | 单轮调用场景无需求 |
 | `degraded` 字段 | 无 | **新增** | 支撑「无 Key 也能跑通」这一硬约束 |
@@ -687,7 +706,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 1. **闭环后半段落地**：间隔重复（SM-2）与评估量规从「报告中的缺口」变为可运行代码。
 2. **产物质量可度量**：评测中心提供带锚点的 Judge 指标体系与跨模型对比能力，使提示词迭代有量化依据。
-3. **架构可行性验证**：证明 DSH 的 Cordis 插件内核与 LLM loader 契约可以脱离 DSH 自身运行时、在一个独立全栈工程中低成本复现。
+3. **架构可行性验证**：证明 DSH 的 Cordis 插件内核与 LLM loader 契约可以直接被一个独立全栈工程以最小成本采用——内核与配置校验均为 DSH 同源的 Cordis / schemastery，无需引入 DSH 全量运行时。
 
 ---
 
@@ -776,7 +795,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 | L2 | 无鉴权与多租户 | 仅适合单机演示/内部验证 | 已知边界 |
 | L3 | 无并发写保护 | WAL 提供读写并发，但缺少业务级事务隔离 | 单用户场景无影响 |
 | L4 | JSON 字段不可 SQL 查询 | 无法按 `objectives` 内容检索 | 换取 schema 稳定 |
-| L5 | 无正式测试套件覆盖 | 仅 `server/tests/core.kernel.spec.ts` | 需补 |
+| L5 | 无正式测试套件覆盖 | 仅 `server/tests/core.kernel.spec.ts`（Cordis 原生装配） | 需补 |
 | L6 | 生产构建未做代码分割 | 首屏体积偏大 | 有优化空间 |
 | L7 | 幻灯片为静态排版 | 无动画/交互 | 依赖 OpenMAIC 渲染器能力边界 |
 | L8 | `README.md` 表数量描述滞后 | 文档与实现不一致（8 vs 9） | 建议同步 |
@@ -788,7 +807,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 按优先级排序：
 
 **P0 — 补齐工程完备性**
-1. 为 `teaching/srs.ts`、`eval/judge.ts`（`normalizeJudgeResult`）、`core/kernel.ts`（装配失败回滚）、`utils/markdown.ts` 补单元测试。这四处是纯函数/强契约逻辑，测试收益最高。
+1. 为 `teaching/srs.ts`、`eval/judge.ts`（`normalizeJudgeResult`）、`utils/markdown.ts` 补单元测试。这三处是纯函数/强契约逻辑，测试收益最高。
 2. 修正 `README.md` 表数量与模式说明的滞后表述。
 
 **P1 — 体验与状态一致性**
@@ -802,7 +821,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 **P3 — 架构演进**
 8. 若需多用户/多租户，在 Repository 之上引入鉴权与 course 归属隔离，而非改动内核。
-9. 若需接入 DSH 生态插件，可在 `core/plugin.ts` 契约不变的前提下，增加一层 DSH 插件描述到本内核 `Plugin` 的适配器——当前契约已为该适配预留了 `Config` / `inject` / `provide` 三个挂点。
+9. 若需接入 DSH 生态插件：内核已与 DSH 同源（同为 Cordis），DSH 插件本身即 Cordis 插件，可直接挂到本项目根容器上；只需保证其 `inject` 引用的服务名（如 `llm`）与本项目已注册的服务对齐。
 
 ---
 
@@ -810,7 +829,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 | 关注点 | 文件 |
 | --- | --- |
-| 内核装配 | `server/src/core/kernel.ts`、`context.ts`、`plugin.ts`、`errors.ts` |
+| 内核装配 | Cordis 原生（`@deepseek-ai/cordis`）；插件模块：`server/src/llm/plugin.ts`、`db/plugin.ts`、`http/plugin.ts`、`server/src/plugins/*/plugin.ts` |
 | 启动入口 | `server/src/index.ts` |
 | 应用装配与模式门禁 | `server/src/app.ts` |
 | 模式解析 | `server/src/config/mode.ts` |
@@ -833,7 +852,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 | 术语 | 含义 |
 | --- | --- |
 | DSH | DeepSeek Harness，本项目架构契约的来源 |
-| Cordis | DSH 使用的插件化内核框架，本项目对其做最小裁剪复刻 |
+| Cordis | DSH 使用的插件化内核框架；本项目直接采用其原生实现（`@deepseek-ai/cordis`），并以 `@deepseek-ai/schemastery` 做配置校验 |
 | StreamChunk | LLM 适配器输出的统一流式分片协议 |
 | degraded | provider 未解析到凭据而回退到确定性 mock 的标记 |
 | SM-2 | SuperMemo-2 间隔重复算法，本项目使用其简化变体 |
