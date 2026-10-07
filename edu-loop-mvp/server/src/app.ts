@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import cors from 'cors'
 import express, { type Express } from 'express'
 import type { AppContext } from './context.js'
+import type { AppMode } from './config/mode.js'
 import { createCourseRouter } from './http/routes/course.js'
 import { createEvalRouter } from './http/routes/eval.js'
 import { createLlmRouter } from './http/routes/llm.js'
@@ -18,6 +19,8 @@ import { createRubricRouter } from './http/routes/rubric.js'
 import { createSlideRouter } from './http/routes/slide.js'
 
 export interface AppOptions {
+  /** 运行模式；生产模式下前端由本服务单端口托管，开发模式下前端独立跑在 vite。 */
+  mode?: AppMode
   /** 生产模式下前端构建产物目录。 */
   webDist?: string
   /** 插件诊断拓扑（可选）：用于暴露 /api/plugins。 */
@@ -28,13 +31,16 @@ export interface AppOptions {
 }
 
 export function createApp(context: AppContext, options: AppOptions = {}): Express {
+  const mode = options.mode ?? 'development'
   const app = express()
-  app.use(cors())
+  // 开发模式前端跑在 5173，需放开跨域；生产为同源单端口，无须 CORS。
+  if (mode === 'development') app.use(cors())
   app.use(express.json({ limit: '2mb' }))
 
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
+      mode,
       defaultProvider: context.llm.defaultProvider,
       defaultModel: context.llm.defaultModel,
       providers: context.runtime.listProviders(),

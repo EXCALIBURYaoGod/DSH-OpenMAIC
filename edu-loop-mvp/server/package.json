@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json --noEmit",
+    "dev": "NODE_ENV=development tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
