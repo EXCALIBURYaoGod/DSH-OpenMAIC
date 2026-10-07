@@ -144,7 +144,9 @@ function buildDeckWithLayout(layout: OpenmaicLayoutService, input: SlideInput): 
       title: page.title,
       bullets: page.bullets,
       isCover: pi === 0,
-      subtitle: input.title,
+      // 封面副标题取本页要点（首页即课次目标）。不能沿用 input.title——首页标题
+      // 本身就是 input.title，会导致封面大标题与副标题出现同一句话。
+      subtitle: page.bullets[0] ?? '',
     }),
   )
 
