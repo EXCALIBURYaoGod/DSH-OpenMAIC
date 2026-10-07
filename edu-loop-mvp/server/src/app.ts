@@ -56,7 +56,14 @@ export function createApp(context: AppContext, options: AppOptions = {}): Expres
   }
 
   app.use('/api/llm', createLlmRouter(context))
-  app.use('/api/eval', createEvalRouter(context))
+  // 评测中心仅开发模式开放；生产模式屏蔽该界面对应的接口。
+  if (mode === 'development') {
+    app.use('/api/eval', createEvalRouter(context))
+  } else {
+    app.use('/api/eval', (_req, res) => {
+      res.status(403).json({ error: { message: '评测中心仅在开发模式可用' } })
+    })
+  }
   app.use('/api/courses', createCourseRouter(context))
   app.use('/api/quiz', createQuizRouter(context))
   app.use('/api/review', createReviewRouter(context))
