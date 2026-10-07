@@ -10,8 +10,7 @@
  * @module plugins/openmaic-storage
  */
 
-import type { Context } from '../../core/context.js'
-import type { Plugin } from '../../core/plugin.js'
+import type { Context } from '@deepseek-ai/cordis'
 import type { SqliteDatabase } from '../../db/sqlite.js'
 import { bindable } from '../../db/sqlite.js'
 
@@ -62,6 +61,15 @@ export interface DocumentStoreContract {
 export interface OpenmaicStorageService {
   kv: KVStoreContract
   docs: DocumentStoreContract
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** KVStore 契约（按 scope 分设备/账户）。 */
+    'kv.store': KVStoreContract
+    /** DocumentStore 契约（stage 元数据 + 有序 scenes）。 */
+    'docs.store': DocumentStoreContract
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,33 +206,32 @@ class SqliteDocumentStore implements DocumentStoreContract {
 }
 
 // ---------------------------------------------------------------------------
-// 桩：让插件保持同步 apply（SQLite 全部为同步调用，包装为 Promise 契约）
+// 插件（Cordis 原生：命名导出 name / provide / inject / apply）
 // ---------------------------------------------------------------------------
 
-export const openmaicStoragePlugin: Plugin = {
-  name: 'openmaic:storage',
-  inject: ['db'],
-  provide: ['kv.store', 'docs.store'],
-  apply(ctx: Context) {
-    const db = ctx.get<SqliteDatabase>('db')
-    db.exec(STORAGE_SCHEMA)
+export const name = 'openmaic:storage'
+export const inject = ['db']
+export const provide = ['kv.store', 'docs.store']
 
-    const kv = new SqliteKVStore(db)
-    const docs = new SqliteDocumentStore(db)
+export function apply(ctx: Context): () => void {
+  const db = ctx.get('db')!
+  db.exec(STORAGE_SCHEMA)
 
-    ctx.service('kv.store', kv as unknown, 'openmaic:storage')
-    ctx.service('docs.store', docs as unknown, 'openmaic:storage')
+  const kv = new SqliteKVStore(db)
+  const docs = new SqliteDocumentStore(db)
 
-    return () => {
-      // 表由 db 插件统一管理生命周期；此处无需额外清理（连接不在本插件掌控）。
-    }
-  },
+  ctx.provide('kv.store', kv)
+  ctx.provide('docs.store', docs)
+
+  return () => {
+    // 表由 db 插件统一管理生命周期；此处无需额外清理（连接不在本插件掌控）。
+  }
 }
 
 /** 便捷读取。 */
 export function useOpenmaicStorage(ctx: Context): OpenmaicStorageService {
   return {
-    kv: ctx.get<KVStoreContract>('kv.store'),
-    docs: ctx.get<DocumentStoreContract>('docs.store'),
+    kv: ctx.get('kv.store')!,
+    docs: ctx.get('docs.store')!,
   }
 }

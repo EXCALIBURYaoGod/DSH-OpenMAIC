@@ -11,8 +11,7 @@
  * @module plugins/openmaic-tts-asr
  */
 
-import type { Context } from '../../core/context.js'
-import type { Plugin } from '../../core/plugin.js'
+import type { Context } from '@deepseek-ai/cordis'
 import { resolveCredential } from '../../config/env.js'
 
 // ---------------------------------------------------------------------------
@@ -209,47 +208,55 @@ export interface OpenmaicAsrService {
   transcribe(config: ASRModelConfig, audio: Buffer): Promise<ASRTranscriptionResult>
 }
 
-export const openmaicAudioPlugin: Plugin = {
-  name: 'openmaic:audio',
-  provide: ['openmaic.tts', 'openmaic.asr'],
-  apply(ctx: Context) {
-    const hasOpenKey = resolveCredential('OPENAI_API_KEY') !== undefined
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** TTS provider 注册表 + generate 路由。 */
+    'openmaic.tts': OpenmaicTtsService
+    /** ASR provider 注册表 + transcribe 路由。 */
+    'openmaic.asr': OpenmaicAsrService
+  }
+}
 
-    const tts: OpenmaicTtsService = {
-      listProviders: listTTSProviders,
-      availableProviderIds() {
-        return listTTSProviders()
-          .filter(p => !p.requiresApiKey || hasOpenKey)
-          .map(p => p.id)
-      },
-      generate(config, text) {
-        return generateTTS(config, text)
-      },
-    }
+export const name = 'openmaic:audio'
+export const provide = ['openmaic.tts', 'openmaic.asr']
 
-    const asr: OpenmaicAsrService = {
-      listProviders: listASRProviders,
-      availableProviderIds() {
-        return listASRProviders()
-          .filter(p => !p.requiresApiKey || hasOpenKey)
-          .map(p => p.id)
-      },
-      transcribe(config, audio) {
-        return transcribeASR(config, audio)
-      },
-    }
+export function apply(ctx: Context): () => void {
+  const hasOpenKey = resolveCredential('OPENAI_API_KEY') !== undefined
 
-    ctx.service('openmaic.tts', tts, 'openmaic:audio')
-    ctx.service('openmaic.asr', asr, 'openmaic:audio')
+  const tts: OpenmaicTtsService = {
+    listProviders: listTTSProviders,
+    availableProviderIds() {
+      return listTTSProviders()
+        .filter(p => !p.requiresApiKey || hasOpenKey)
+        .map(p => p.id)
+    },
+    generate(config, text) {
+      return generateTTS(config, text)
+    },
+  }
 
-    if (!hasOpenKey) {
-      console.warn('[openmaic] 未配置 OPENAI_API_KEY，audio 仅开放 browser-native 桩；配置后可用 openai-tts / openai-whisper。')
-    }
+  const asr: OpenmaicAsrService = {
+    listProviders: listASRProviders,
+    availableProviderIds() {
+      return listASRProviders()
+        .filter(p => !p.requiresApiKey || hasOpenKey)
+        .map(p => p.id)
+    },
+    transcribe(config, audio) {
+      return transcribeASR(config, audio)
+    },
+  }
 
-    return () => {
-      console.log('[openmaic] audio 插件停止')
-    }
-  },
+  ctx.provide('openmaic.tts', tts)
+  ctx.provide('openmaic.asr', asr)
+
+  if (!hasOpenKey) {
+    console.warn('[openmaic] 未配置 OPENAI_API_KEY，audio 仅开放 browser-native 桩；配置后可用 openai-tts / openai-whisper。')
+  }
+
+  return () => {
+    console.log('[openmaic] audio 插件停止')
+  }
 }
 
 /** 便捷读取。 */
@@ -258,7 +265,7 @@ export function useOpenmaicAudio(ctx: Context): {
   asr: OpenmaicAsrService
 } {
   return {
-    tts: ctx.get<OpenmaicTtsService>('openmaic.tts'),
-    asr: ctx.get<OpenmaicAsrService>('openmaic.asr'),
+    tts: ctx.get('openmaic.tts')!,
+    asr: ctx.get('openmaic.asr')!,
   }
 }

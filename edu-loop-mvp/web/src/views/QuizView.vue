@@ -160,6 +160,8 @@ async function submit(questionId: string): Promise<void> {
 .options {
   display: flex;
   flex-direction: column;
+  /* 覆盖 Element Plus .el-radio-group 默认的 align-items:center，让选项左对齐。 */
+  align-items: flex-start;
   gap: 4px;
 }
 

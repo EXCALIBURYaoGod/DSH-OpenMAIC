@@ -9,14 +9,13 @@
  *   - text.content 为 HTML 字符串（renderer 经 dangerouslySetInnerHTML 渲染）；
  *   - shape 用 viewBox + path 绘制主题色条/装饰块；
  *   - 每页 Slide 带 viewportSize/viewportRatio/theme/background。
- * - `openmaic-slide` 通过 `ctx.getOrNull('openmaic.layout')` 消费；本服务缺失时
+ * - `openmaic-slide` 通过 `ctx.get('openmaic.layout')` 消费；本服务缺失时
  *   slide 降级为原线性 text 布局，不阻断闭环。
  *
  * @module plugins/openmaic-layout
  */
 
-import type { Context } from '../../core/context.js'
-import type { Plugin } from '../../core/plugin.js'
+import type { Context } from '@deepseek-ai/cordis'
 
 /** 一页布局的输入（由调用方从课程/课次提取）。 */
 export interface LayoutPageInput {
@@ -52,6 +51,13 @@ export interface OpenmaicLayoutService {
   available: boolean
   /** 生成一页 PPT 布局（元素 + 主题 + 背景）。 */
   layoutSlide(input: LayoutPageInput): LayoutPage
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** 完整 PPT 四点式布局生成器。 */
+    'openmaic.layout': OpenmaicLayoutService
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,42 +259,40 @@ function contentElements(input: LayoutPageInput): Array<Record<string, unknown>>
 }
 
 // ---------------------------------------------------------------------------
-// 插件
+// 插件（Cordis 原生：命名导出 name / provide / apply）
 // ---------------------------------------------------------------------------
 
-export const openmaicLayoutPlugin: Plugin = {
-  name: 'openmaic:layout',
-  inject: [],
-  provide: 'openmaic.layout',
-  apply(ctx: Context) {
-    const service: OpenmaicLayoutService = {
-      available: true,
-      layoutSlide(input) {
-        const isCover = input.isCover === true || input.index === 0
-        const elements = isCover ? coverElements(input) : contentElements(input)
-        return {
-          id: nextId('slide'),
-          viewportSize: VIEWPORT_W,
-          viewportRatio: RATIO,
-          theme: { ...THEME },
-          background: { type: 'solid', color: THEME.backgroundColor },
-          elements,
-          type: isCover ? 'cover' : 'content',
-          script: input.bullets.join('；'),
-        }
-      },
-    }
+export const name = 'openmaic:layout'
+export const provide = 'openmaic.layout'
 
-    ctx.service('openmaic.layout', service, 'openmaic:layout')
-    console.log('[openmaic] layout 插件已加载（完整 PPT 布局生成器）')
+export function apply(ctx: Context): () => void {
+  const service: OpenmaicLayoutService = {
+    available: true,
+    layoutSlide(input) {
+      const isCover = input.isCover === true || input.index === 0
+      const elements = isCover ? coverElements(input) : contentElements(input)
+      return {
+        id: nextId('slide'),
+        viewportSize: VIEWPORT_W,
+        viewportRatio: RATIO,
+        theme: { ...THEME },
+        background: { type: 'solid', color: THEME.backgroundColor },
+        elements,
+        type: isCover ? 'cover' : 'content',
+        script: input.bullets.join('；'),
+      }
+    },
+  }
 
-    return () => {
-      console.log('[openmaic] layout 插件停止')
-    }
-  },
+  ctx.provide('openmaic.layout', service)
+  console.log('[openmaic] layout 插件已加载（完整 PPT 布局生成器）')
+
+  return () => {
+    console.log('[openmaic] layout 插件停止')
+  }
 }
 
-/** 便捷读取（调用方可 getOrNull 判断是否存在）。 */
+/** 便捷读取（调用方可用 `ctx.get('openmaic.layout')` 判断是否存在）。 */
 export function useOpenmaicLayout(ctx: Context): OpenmaicLayoutService {
-  return ctx.get<OpenmaicLayoutService>('openmaic.layout')
+  return ctx.get('openmaic.layout')!
 }

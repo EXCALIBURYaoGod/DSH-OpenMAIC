@@ -1,5 +1,9 @@
 /**
- * 内核单元测试：插件装配 / 依赖注入 / 生命周期。
+ * 内核装配测试：验证项目所用的 Cordis 原生内核契约确实成立。
+ *
+ * 内核已由自研实现改为直接依赖 `@deepseek-ai/cordis`，本测试因此针对
+ * Cordis 的行为打桩，覆盖项目实际依赖的四项能力：服务注册与读取、
+ * `inject` 依赖门控、fiber 卸载回收服务、`Config`（Standard Schema）校验。
  *
  * 用 Node 内置 `node:test` 零依赖运行：
  *   node --import tsx --test tests/core.kernel.spec.ts
@@ -9,128 +13,102 @@
 
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
-import { createKernel } from '../src/core/kernel.js'
-import { KernelError } from '../src/core/errors.js'
-import type { Plugin } from '../src/core/plugin.js'
+import { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 
-describe('createKernel()', () => {
-  it('按序加载插件、提供服务并可在卸载时删除服务', async () => {
-    const kernel = createKernel()
-    const spy: string[] = []
+/** 从注册表中取当前已加载插件的名字集合。 */
+function pluginNames(ctx: Context): string[] {
+  const names: string[] = []
+  for (const runtime of ctx.registry.values()) {
+    if (runtime.name) names.push(runtime.name)
+  }
+  return names
+}
 
-    await kernel.plugin<{ v: number }>({
-      name: 'tier-1',
-      provide: 'a',
-      apply(ctx, config) {
-        ctx.service('a', { value: config.v }, 'tier-1')
-        spy.push('apply-a')
-        return () => spy.push('dispose-a')
-      },
-    }, { v: 1 })
-
-    // 依赖注入：b 依赖 a。
-    await kernel.plugin({
-      name: 'tier-2',
-      inject: ['a'],
-      provide: 'b',
+describe('Cordis 原生内核', () => {
+  it('插件通过 ctx.provide 注册服务，可被 ctx.get 读取', async () => {
+    const root = new Context()
+    await root.plugin({
+      name: 'svc',
+      provide: 'answer',
       apply(ctx) {
-        const a = ctx.get<{ value: number }>('a')
-        ctx.service('b', a.value + 1, 'tier-2')
+        ctx.provide('answer', 42)
       },
     })
 
-    assert.equal(kernel.root.get<{ value: number }>('a').value, 1)
-    assert.equal(kernel.root.get<number>('b'), 2)
-    assert.deepEqual(kernel.listPlugins(), ['tier-1', 'tier-2'])
-    assert.deepEqual(spy, ['apply-a'])
+    assert.equal(root.get('answer'), 42)
+    assert.deepEqual(pluginNames(root), ['svc'])
   })
 
-  it('支持异步 apply：await 后服务才注册', async () => {
-    const kernel = createKernel()
-    const handle = await kernel.plugin({
+  it('inject 依赖未满足时不加载，满足后自动加载', async () => {
+    const root = new Context()
+    const ran: string[] = []
+
+    // 消费者先声明：此时 'dep' 尚不存在，apply 不应执行。
+    root.plugin({
+      name: 'consumer',
+      inject: ['dep'],
+      apply() {
+        ran.push('consumer')
+      },
+    })
+    assert.deepEqual(ran, [])
+
+    // 提供者出现后，依赖被唤醒，消费者加载。
+    await root.plugin({
+      name: 'provider',
+      provide: 'dep',
+      apply(ctx) {
+        ctx.provide('dep', 1)
+      },
+    })
+    await Promise.resolve()
+    assert.deepEqual(ran, ['consumer'])
+  })
+
+  it('支持异步 apply：await 之后服务才可用', async () => {
+    const root = new Context()
+    await root.plugin({
       name: 'async-p',
       provide: 'svc',
       async apply(ctx) {
         await Promise.resolve()
-        ctx.service('svc', 'async', 'async-p')
+        ctx.provide('svc', 'async')
       },
     })
-    assert.equal(kernel.root.get('svc'), 'async')
-    assert.equal(kernel.root.has('svc'), true)
-    handle.dispose()
-    assert.equal(kernel.root.has('svc'), false)
+    assert.equal(root.get('svc'), 'async')
   })
 
-  it('依赖缺失时抛 MISSING_DEPENDENCY', async () => {
-    const kernel = createKernel()
-    await assert.rejects(
-      kernel.plugin({ name: 'x', inject: ['nope'], apply: () => {} }),
-      (e: KernelError) => e.code === 'MISSING_DEPENDENCY',
-    )
-  })
-
-  it('重复提供同一服务时抛 DUPLICATE_SERVICE（全有或全无）', async () => {
-    const kernel = createKernel()
-    await kernel.plugin({ name: 'p1', provide: 'svc', apply: ctx => ctx.service('svc', 1, 'p1') })
-    await assert.rejects(
-      kernel.plugin({ name: 'p2', provide: 'svc', apply: () => {} }),
-      (e: KernelError) => e.code === 'DUPLICATE_SERVICE',
-    )
-  })
-
-  it('config 校验失败抛 INVALID_CONFIG', async () => {
-    const kernel = createKernel()
-    await assert.rejects(
-      kernel.plugin({
-        name: 'cfg',
-        Config: (c: { v?: number }) => c.v !== undefined,
-        apply: () => {},
-      }, {}),
-      (e: KernelError) => e.code === 'INVALID_CONFIG',
-    )
-  })
-
-  it('apply 抛错时不留下已注册服务（回滚）', async () => {
-    const kernel = createKernel()
-    await assert.rejects(kernel.plugin({
-      name: 'boom',
-      provide: ['s1', 's2'],
-      apply(ctx) {
-        ctx.service('s1', 1, 'boom')
-        throw new Error('boom')
-      },
-    }))
-    assert.equal(kernel.root.has('s1'), false)
-    assert.equal(kernel.root.has('s2'), false)
-  })
-
-  it('dispose 幂等：调用 disposer 并删除其提供的服务', async () => {
-    const kernel = createKernel()
-    let disposed = 0
-    const handle = await kernel.plugin({
+  it('fiber 卸载时自动回收其提供的服务', async () => {
+    const root = new Context()
+    const fiber = await root.plugin({
       name: 'life',
       provide: 'svc',
       apply(ctx) {
-        ctx.service('svc', 'alive', 'life')
-        return () => { disposed += 1 }
+        ctx.provide('svc', 'alive')
       },
     })
-    assert.equal(kernel.root.get('svc'), 'alive')
+    assert.equal(root.get('svc'), 'alive')
 
-    handle.dispose()
-    handle.dispose() // 幂等
-    assert.equal(disposed, 1)
-    assert.equal(kernel.root.has('svc'), false)
-    assert.deepEqual(kernel.listPlugins(), [])
+    await fiber.dispose()
+    assert.equal(root.get('svc'), undefined)
+    assert.deepEqual(pluginNames(root), [])
   })
 
-  it('事件总线：plugin.loaded / plugin.disposed', async () => {
-    const kernel = createKernel()
-    const events: string[] = []
-    kernel.root.on('plugin.loaded', (name: unknown) => events.push(`loaded:${name as string}`))
-    kernel.root.on('plugin.disposed', (name: unknown) => events.push(`disposed:${name as string}`))
-    const handle = await kernel.plugin({ name: 'evt', apply: () => {} })
-    handle.dispose()
-    assert.deepEqual(events, ['loaded:evt', 'disposed:evt'])
+  it('Config 校验失败时装载被拒绝（Standard Schema）', async () => {
+    const root = new Context()
+    const fiber = root.plugin(
+      {
+        name: 'cfg',
+        provide: 'svc',
+        Config: z.object({ v: z.number().required() }),
+        apply(ctx: Context, config: { v: number }) {
+          ctx.provide('svc', config.v)
+        },
+      },
+      { v: 'not-a-number' } as unknown as { v: number },
+    )
+    await assert.rejects(() => fiber.await())
+    assert.equal(root.get('svc'), undefined)
   })
 })
