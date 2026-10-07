@@ -4,6 +4,17 @@
  * @module api/types
  */
 
+/** 运行模式：与后端 `NODE_ENV` 解析结果一致。 */
+export type AppMode = 'development' | 'production'
+
+/** `/api/health` 响应；用于前端感知当前运行模式。 */
+export interface HealthResponse {
+  ok: boolean
+  mode: AppMode
+  defaultProvider: string
+  defaultModel: string
+}
+
 export interface ProviderModel {
   provider: string
   id: string

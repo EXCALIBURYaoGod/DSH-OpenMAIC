@@ -5,14 +5,22 @@ import { ElMessage } from 'element-plus'
 import { STEPS } from '@/router'
 import { useLlmStore } from '@/stores/llm'
 import { useCourseStore } from '@/stores/course'
+import { useSystemStore } from '@/stores/system'
 
 const llm = useLlmStore()
 const course = useCourseStore()
+const system = useSystemStore()
 const route = useRoute()
 const router = useRouter()
 
-const activeIndex = computed(() => STEPS.findIndex(step => step.path === route.path))
-const currentStep = computed(() => STEPS[Math.max(activeIndex.value, 0)]!)
+/** 生产模式屏蔽评测中心：从步骤条中剔除该入口。 */
+const visibleSteps = computed(() => (system.evalEnabled ? STEPS : STEPS.filter(step => step.name !== 'eval')))
+const brandSub = computed(() =>
+  system.evalEnabled ? '课程 · 讲解 · 测验 · 复习 · 量规 · 评测' : '课程 · 讲解 · 测验 · 复习 · 量规',
+)
+
+const activeIndex = computed(() => visibleSteps.value.findIndex(step => step.path === route.path))
+const currentStep = computed(() => visibleSteps.value[Math.max(activeIndex.value, 0)]!)
 
 onMounted(async () => {
   await llm.load()
@@ -42,12 +50,12 @@ async function onSelectCourse(id: string): Promise<void> {
     <el-aside width="248px" class="sidebar">
       <div class="brand">
         <div class="brand-title">教学闭环 MVP</div>
-        <div class="brand-sub">课程 · 讲解 · 测验 · 复习 · 量规 · 评测</div>
+        <div class="brand-sub">{{ brandSub }}</div>
       </div>
 
       <el-steps direction="vertical" :active="activeIndex" class="steps">
         <el-step
-          v-for="(step, index) in STEPS"
+          v-for="(step, index) in visibleSteps"
           :key="step.path"
           :title="step.title"
           :description="step.description"
