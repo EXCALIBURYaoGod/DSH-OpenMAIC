@@ -15,10 +15,13 @@ import type { Plugin } from '../core/plugin.js'
 import type { LoadedLlm } from '../llm/loader.js'
 import type { Repository } from '../db/repo.js'
 import type { AppContext } from '../context.js'
+import type { AppMode } from '../config/mode.js'
 import type { OpenmaicSlideService } from '../plugins/openmaic-slide/plugin.js'
 import { createApp } from '../app.js'
 
 export interface HttpPluginConfig {
+  /** 运行模式；生产模式托管前端构建产物，开发模式仅提供 API。 */
+  mode?: AppMode
   /** 生产模式下前端构建产物目录；缺省则不托管静态资源。 */
   webDist?: string
 }
@@ -42,6 +45,7 @@ export const httpPlugin: Plugin<HttpPluginConfig> = {
     }
 
     const app: Express = createApp(appContext, {
+      ...(config.mode === undefined ? {} : { mode: config.mode }),
       ...(config.webDist === undefined ? {} : { webDist: config.webDist }),
       plugins: {
         listPlugins: () => kernel.listPlugins(),

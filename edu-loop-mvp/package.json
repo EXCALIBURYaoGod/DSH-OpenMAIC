@@ -9,6 +9,8 @@
     "dev:server": "pnpm --filter @edu-loop/server run dev",
     "dev:web": "pnpm --filter @edu-loop/web run dev",
     "build": "pnpm -r run build",
+    "start": "pnpm --filter @edu-loop/server run start",
+    "prod": "pnpm run build && pnpm run start",
     "typecheck": "pnpm -r run typecheck"
   }
 }
