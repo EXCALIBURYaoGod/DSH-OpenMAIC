@@ -33,7 +33,7 @@
 | 无凭据运行 | 支持。未解析到 Key 时自动降级到确定性 mock 适配器，闭环仍完整 |
 | 真实模型 | 已接入火山方舟（豆包）与 DeepSeek，默认 provider = `doubao` |
 | 运行模式 | dev / production 双模式已分离并验证 |
-| 幻灯片 | 已接入 `@openmaic/dsl` 契约，不可解析时降级不阻断闭环 |
+| 幻灯片 | 优先接入 `openmaic.layout` 布局服务与 `@openmaic/dsl` 契约，均不可用时降级为内置生成器，不阻断闭环 |
 
 ---
 
@@ -44,7 +44,7 @@
 | G1 | **无 Key 也能完整跑通闭环** | 确定性 mock 适配器 + `degraded` 标记 |
 | G2 | **配置驱动接入任意 OpenAI 兼容端点** | `llm.config.json` provider profile，不改业务代码 |
 | G3 | **架构对齐 DSH：内核同源、业务契约裁剪对齐** | 内核直接采用 `@deepseek-ai/cordis`（与 DSH 同源）；LLM 契约按需裁剪复刻 |
-| G4 | **闭环状态可持久化、可回放** | SQLite 9 张表，全链路落库 |
+| G4 | **闭环状态可持久化、可回放** | SQLite 11 张表（业务 9 + 存储 2），全链路落库 |
 | G5 | **开发/生产两模式语义清晰** | `AppMode` 单点解析，跨域/托管/接口门禁统一受控 |
 | G6 | **模型输出作为不可信输入处理** | 零依赖 Markdown 白名单渲染 + 长度截断 |
 
@@ -96,7 +96,7 @@
 | 层 | 选型 | 选型理由 |
 | --- | --- | --- |
 | 前端框架 | Vue 3 + `<script setup lang="ts">` | 轻量、模板直观，适合演示型六页应用 |
-| 构建 | Vite 5 | 冷启动快；dev 代理 `/api` 即可免 CORS 调试 |
+| 构建 | Vite 6 | 冷启动快；dev 代理 `/api` 即可免 CORS 调试 |
 | UI | Element Plus | 表单/步骤条/卡片开箱可用，减少自研成本 |
 | 状态 | Pinia | 与 Vue3 原生契合；单 store 承载闭环状态 |
 | 后端 | Node + Express | SSE 与路由模型简单，无框架黑盒 |
@@ -394,13 +394,13 @@ schedule(state, grade, now):
 | `outline` | 课程整体大纲（1 份） | 同左 |
 | `explain` | 首个课次的讲解 | 全部课次讲解 |
 | `quiz` | 首道题 | 全部题目 |
-| `grade` | 首次作答反馈 | 全部作答反馈 |
+| `grade` | 最近一次作答反馈 | 全部作答反馈 |
 
 ---
 
 ## 9. 数据模型
 
-`server/src/db/index.ts` 中集中定义 DDL，共 **9 张表**。连接建立后立即执行：
+`server/src/db/index.ts` 中集中定义 DDL，共 **9 张业务表**；此外 `openmaic-storage` 插件在运行时另建 `storage_kv` / `storage_docs` 两张存储表，**全库合计 11 张**。连接建立后立即执行：
 
 ```sql
 PRAGMA journal_mode = WAL;   -- 读写并发，避免写锁阻塞读
@@ -429,7 +429,7 @@ PRAGMA foreign_keys = ON;    -- 启用外键约束（SQLite 默认关闭）
 - **索引策略聚焦访问路径**：按课程取课次/题目（`(course_id, idx)`）、按到期时间取复习项（`due_at`）、按时间倒序取审计日志（`created_at`）。
 - **`llm_call_logs` 是可观测性基座**：每次 LLM 调用落一条，含 `task`、字符数、真实 token 数、延迟与状态，使「成本与质量」可被量化。
 
-> 注：`edu-loop-mvp/README.md` 中「共 8 张表」的表述已滞后（`eval_runs` 为评测中心新增），实际为 9 张。
+> 注：`edu-loop-mvp/README.md` 中「共 8 张表」的表述已滞后（`eval_runs` 为评测中心新增，`storage_kv` / `storage_docs` 为存储插件新增），实际全库为 11 张。
 
 ### 9.3 仓库访问层
 
@@ -446,7 +446,7 @@ PRAGMA foreign_keys = ON;    -- 启用外键约束（SQLite 默认关闭）
 | 审计 | `insertLlmLog` / `listLlmLogs` |
 | 评测 | `insertEvalRun` / `listEvalRuns` / `latestEvalPerType` |
 
-批量插入（`insertLessons` / `insertQuestions`）在事务中执行，保证课程与课次/题目的原子性。
+批量插入（`insertLessons` / `insertQuestions`）当前为循环逐条 `run()`，**未包裹显式事务**，因此课程与课次/题目的写入不具原子性（属已知简化，见第 16 节 L3）。
 
 ---
 
@@ -472,12 +472,12 @@ PRAGMA foreign_keys = ON;    -- 启用外键约束（SQLite 默认关闭）
 | 方法 | 路径 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/courses` | JSON | 课程列表 |
-| GET | `/api/courses/:id` | JSON | 课程详情（课程 + 课次 + 作答统计） |
+| GET | `/api/courses/:id` | JSON | 课程详情（课程 + 课次 + 作答统计 + `questionCount`） |
 | POST | `/api/courses` | **SSE** | 步骤①生成课程大纲。body: `{ topic, material?, provider, model }` |
 | POST | `/api/courses/:id/lessons/:lessonId/explain` | **SSE** | 步骤②生成讲解 |
 | GET | `/api/quiz/courses/:courseId/questions` | JSON | 题目 + 作答 + 统计 |
 | POST | `/api/quiz/courses/:courseId/generate` | JSON | 步骤③a 出题。body: `{ provider, model, lessonId?, count? }` |
-| POST | `/api/quiz/questions/:questionId/attempt` | JSON | 步骤③b 作答判分，返回 `{ attempt, stats }` |
+| POST | `/api/quiz/questions/:questionId/attempt` | JSON | 步骤③b 作答判分，返回 `{ attempt, review, stats }` |
 | GET | `/api/review/courses/:courseId/due` | JSON | 步骤④到期复习项 |
 | GET | `/api/review/courses/:courseId/all` | JSON | 全部复习状态 |
 | POST | `/api/review/questions/:questionId/review` | JSON | 提交 0–5 回忆评分，返回 `{ review, remainingDue }` |
@@ -540,10 +540,10 @@ X-Accel-Buffering: no          # 关键：禁用 Nginx 等反代的响应缓冲�
 `web/src/main.ts` 的顺序至关重要：
 
 ```
-1. createApp + use(pinia)
-2. useSystemStore → await system.load()      # 先取 /api/health 的 mode
-3. router.beforeEach(...)                     # 注册守卫：生产模式拦截 /eval
-4. app.use(router)
+1. createApp(App) + createPinia()
+2. useSystemStore(pinia) → await system.load()  # 先取 /api/health 的 mode
+3. router.beforeEach(...)                        # 注册守卫：生产模式拦截 /eval
+4. app.use(pinia).use(router).use(ElementPlus)   # 安装 pinia / router / Element Plus
 5. app.mount('#app')
 ```
 
@@ -553,7 +553,7 @@ X-Accel-Buffering: no          # 关键：禁用 Nginx 等反代的响应缓冲�
 
 | store | 职责 |
 | --- | --- |
-| `course.ts` | **闭环全部状态**：courses / course / lessons / questions / attempts / stats / due / reviews / rubric / evaluation / slideDeck；getters 提供 `latestAttemptByQuestion`、`wrongQuestions`、`dueCount`；actions 覆盖五步全部读写 |
+| `course.ts` | **闭环全部状态**：courses / course / lessons / questions / attempts / stats / due / reviews / rubric / evaluation / slideDeck / slideTask；getters 提供 `latestAttemptByQuestion`、`wrongQuestions`、`dueCount`；actions 覆盖五步全部读写 |
 | `llm.ts` | provider / model 选择状态 |
 | `system.ts` | 运行模式，getter `evalEnabled = mode === 'development'` |
 
@@ -622,7 +622,7 @@ dev 模式下前端通过 Vite 代理访问后端，因此浏览器侧实际是*
 
 ```ts
 // web/vite.config.ts
-server: { port: 5173, proxy: { '/api': { target: 'http://localhost:8787', changeOrigin: true } } }
+server: { port: 5173, proxy: { '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true } } }
 ```
 
 ### 12.3 评测中心的双端门禁
@@ -687,7 +687,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 | 幻灯片资源契约 | `@openmaic/dsl`（`file:../../OpenMAIC/packages/@openmaic/dsl`） | 后端 `openmaic-slide` 插件产出符合 `Stage`/`Scene`/`SlideElement` 契约的文档并用其校验 |
 | 渲染器 | Vite alias → `OpenMAIC/packages/@openmaic/renderer/src` | 前端 `SlidePreview.vue` 编译源码渲染 |
 
-**软耦合设计**：`openmaic-slide` 在解析不到 `@openmaic/dsl` 时**降级为内置生成器**，只打警告、不抛错、不阻断闭环。
+**软耦合设计**：`openmaic-slide` 的生成链为 **优先 `openmaic.layout` 布局服务 → 其次 `@openmaic/dsl` → 最后内置生成器**；解析不到 `@openmaic/dsl` 时只打警告、不抛错、不阻断闭环，`available` / `source` 字段如实标注当前来源。
 
 ### 13.3 有意收窄的部分（差异清单）
 
@@ -722,13 +722,14 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 ### 14.2 环境变量
 
-`.env` 由 `server/src/config/env.ts` 的 `loadDotEnv` 在启动时加载，仅存**凭据变量名到值的映射**；`llm.config.json` 只引用变量名，不落明文。
+`.env` 由 `server/src/config/env.ts` 的 `loadDotEnv` 在启动时加载，仅存**凭据变量名到值的映射**；`llm.config.json` 只引用变量名，不落明文。仓库内随附**不含任何凭据**的 `.env.example` 模板（已入库、不纳入 `.gitignore`），复制为 `.env` 后填入真实值即可。
 
 | 变量 | 用途 |
 | --- | --- |
 | `DOUBAO_LLM_API_KEY` | 火山方舟（豆包）凭据，默认 provider |
 | `DEEPSEEK_API_KEY` | DeepSeek 凭据 |
-| `PORT` | 后端端口，默认 `8787` |
+| `OPENAI_API_KEY` | `openmaic:audio` 插件的 `openai-tts` / `openai-whisper` provider 凭据（可选，留空则对应 provider 不可用） |
+| `PORT` | 后端端口，默认 `8787`（在 `.env` 加载前即被读取，需经进程环境注入才生效） |
 
 ### 14.3 命令
 
@@ -758,7 +759,7 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 | 面 | 措施 |
 | --- | --- |
-| 凭据管理 | 配置文件只存环境变量名，值仅存于 `.env`；`.env` 已在 `.gitignore` |
+| 凭据管理 | 配置文件只存环境变量名，值仅存于 `.env`；`.env` 已在 `.gitignore`，仓库只保留不含任何凭据的 `.env.example` 模板 |
 | XSS | 模型输出经转义 + 白名单子集渲染，不直接 `v-html` |
 | 输入边界 | `express.json` 限 2mb；`topic` 空值校验；prompt 中 `material` 截断至 4000 字符；Judge artifact 截断至 6000 字符 |
 | 输出失控 | `normalize.ts` 对 objectives/lessons/keyPoints 数量设上限 |
@@ -796,9 +797,9 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 | L3 | 无并发写保护 | WAL 提供读写并发，但缺少业务级事务隔离 | 单用户场景无影响 |
 | L4 | JSON 字段不可 SQL 查询 | 无法按 `objectives` 内容检索 | 换取 schema 稳定 |
 | L5 | 无正式测试套件覆盖 | 仅 `server/tests/core.kernel.spec.ts`（Cordis 原生装配） | 需补 |
-| L6 | 生产构建未做代码分割 | 首屏体积偏大 | 有优化空间 |
-| L7 | 幻灯片为静态排版 | 无动画/交互 | 依赖 OpenMAIC 渲染器能力边界 |
-| L8 | `README.md` 表数量描述滞后 | 文档与实现不一致（8 vs 9） | 建议同步 |
+| L6 | 首屏依赖较重（Element Plus 全量注册） | 首屏体积仍有优化空间（路由级代码分割已实现） | 可改按需引入 |
+| L7 | 幻灯片仅支持翻页交互 | 页面内无过渡动画/富交互 | 依赖 OpenMAIC 渲染器能力边界 |
+| L8 | `README.md` 表数量描述滞后 | 文档与实现不一致（8 vs 11） | 建议同步 |
 
 ---
 
@@ -812,10 +813,10 @@ pnpm start          # NODE_ENV=production node dist/index.js，单端口 8787
 
 **P1 — 体验与状态一致性**
 3. 课程选择持久化（`localStorage` 记住 courseId，启动自动 `selectCourse`），消除 L1。
-4. 生产构建增加路由级代码分割与 `SlidePreview` 懒加载，缓解 L6。
+4. Element Plus 改为按需引入以进一步减小首屏体积（路由级代码分割与 `SlidePreview` 懒加载已实现），缓解 L6。
 
 **P2 — 能力扩展**
-5. 为评测中心引入**历史趋势**视图（同一课程跨版本/跨模型的 `eval_runs` 对比曲线），把「可度量」推进到「可回归」。
+5. 评测中心的**历史趋势**视图已实现（`EvalView.vue` 中按产物类型的历史运行环比趋势块）；后续可扩展为跨课程/跨模型的聚合对比曲线，把「可度量」推进到「可回归」。
 6. 把 `openmaic.tts` / `openmaic.asr` 两个已注册但未在闭环中使用的服务接入讲解页（语音播报 + 口头作答），打通多模态学习路径。
 7. 复习调度从简化 SM-2 演进为 FSRS，并引入「作答耗时」「提示使用」等信号作为回忆质量输入。
 
