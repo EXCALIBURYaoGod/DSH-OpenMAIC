@@ -20,13 +20,25 @@ const _cache = new Map<string, string>();
 // `src/pbl/prompts` and `dist/pbl/prompts` have the same depth below the package root.
 // Resolve from this module's URL via path operations so app bundlers do not
 // mistake the Markdown directory for a statically imported module asset.
-const PROMPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../prompts-pbl');
+const DEFAULT_PROMPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../prompts-pbl');
+
+/**
+ * Resolve the PBL prompt directory, honouring `OPENMAIC_PBL_PROMPTS_DIR`.
+ *
+ * Same bundling caveat as the main prompt loader: a single-file consumer sets
+ * the env var at start-up because `import.meta.url` no longer sits three levels
+ * below the package root once this module is inlined.
+ */
+function resolvePromptsDir(): string {
+  const override = process.env.OPENMAIC_PBL_PROMPTS_DIR?.trim();
+  return override ? resolve(override) : DEFAULT_PROMPTS_DIR;
+}
 
 /** Read a markdown prompt by file name (without extension), cached. */
 function readPromptFile(name: string): string {
   const cached = _cache.get(name);
   if (cached !== undefined) return cached;
-  const filePath = join(PROMPTS_DIR, `${name}.md`);
+  const filePath = join(resolvePromptsDir(), `${name}.md`);
   const text = readFileSync(filePath, 'utf-8').trim();
   _cache.set(name, text);
   return text;

@@ -1,0 +1,67 @@
+{
+  "name": "@openteach/bundle",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenTeach for DeepSeek Harness：OpenMAIC 多智能体互动课堂内核（后端插件包，按 11 个模块插件组装）",
+  "main": "lib/index.js",
+  "types": "types/index.d.ts",
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.1.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src": "./src/index.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "types",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dshx": {
+    "contributes": {
+      "tools": [],
+      "skills": []
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1"
+  },
+  "devDependencies": {
+    "@openteach/plugin-audio": "workspace:*",
+    "@openteach/plugin-classroom": "workspace:*",
+    "@openteach/plugin-db": "workspace:*",
+    "@openteach/plugin-generation": "workspace:*",
+    "@openteach/plugin-http": "workspace:*",
+    "@openteach/plugin-kernel": "workspace:*",
+    "@openteach/plugin-layout": "workspace:*",
+    "@openteach/plugin-llm": "workspace:*",
+    "@openteach/plugin-openmaic-core": "workspace:*",
+    "@openteach/plugin-slide": "workspace:*",
+    "@openteach/plugin-storage": "workspace:*",
+    "@openteach/shared": "workspace:*",
+    "@types/node": "^22.10.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.9.0"
+  },
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "sharp": "0.35.4"
+  }
+}

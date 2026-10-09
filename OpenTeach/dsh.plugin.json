@@ -1,0 +1,10 @@
+{
+  "id": "@openteach/bundle",
+  "version": "0.1.0",
+  "main": "./lib/index.js",
+  "description": "OpenTeach for DeepSeek Harness: 教学闭环与 OpenMAIC 多智能体互动课堂内核（后端插件包）",
+  "engines": {
+    "dsh": ">=0.1.0"
+  },
+  "contributes": {}
+}

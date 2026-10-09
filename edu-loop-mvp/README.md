@@ -135,20 +135,14 @@ pnpm --filter @edu-loop/server run start
 edu-loop-mvp/
 ├─ llm.config.json          # provider profile（模型接入的唯一开关）
 ├─ .env.example             # 凭据模板
-├─ server/
-│  └─ src/
-│     ├─ llm/               # DSH 风格 loader：types / registry / config / loader / adapters
-│     ├─ db/                # node:sqlite 封装、schema、Repository
-│     ├─ teaching/          # 提示词、JSON 提取、SRS 调度、结果归一化
-│     ├─ http/routes/       # course / quiz / review / rubric / llm 路由
-│     └─ app.ts / index.ts  # 装配与入口
-└─ web/
+└─ server/                  # 仅后端：加载 OpenTeach bundle 并启动 HTTP 服务
    └─ src/
-      ├─ api/               # 类型与 fetch/SSE 客户端
-      ├─ stores/            # Pinia：llm、course（闭环全部 actions）
-      ├─ views/             # 五步页面
-      └─ utils/markdown.ts  # 白名单 markdown 渲染（防 XSS）
+      └─ index.ts           # 入口：组装 OpenTeach 各模块插件 → app.listen
 ```
+
+> 教学闭环后端与各模块插件已迁至 `OpenTeach/`（可安装的 DSH 插件 `@openteach/bundle`）；
+> 前端已拆为独立包 `OpenTeach-frontend/`（`@openteach/frontend`，直接移植自 OpenMAIC 前端，
+> 通过 `OPENTEACH_API_BASE` 把 `/api/*` 代理到本后端）。
 
 ---
 
@@ -156,7 +150,7 @@ edu-loop-mvp/
 
 | 命令 | 说明 |
 | --- | --- |
-| `pnpm dev` | 并行启动前后端（开发） |
-| `pnpm dev:server` / `pnpm dev:web` | 单独启动后端 / 前端 |
-| `pnpm build` | 类型检查 + 前端构建 |
+| `pnpm dev` | 启动后端（开发） |
+| `pnpm dev:server` | 单独启动后端 |
+| `pnpm build` | 构建后端 |
 | `pnpm typecheck` | 全量类型检查 |

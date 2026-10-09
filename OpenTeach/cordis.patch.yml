@@ -1,0 +1,23 @@
+# OpenTeach 的 dsh bundle patch：向 profile 的 layer 栈插入 **一个** 可安装行。
+#
+# 该行指向本包（`@openteach/bundle`）。11 个后端模块插件（llm → db → kernel →
+# storage → generation → layout → slide → audio → classroom → openmaic-core → http）
+# 不再各自作为 layer 行出现，而是由本包 `src/index.ts` 的 `apply()` 在进程内按依赖
+# 顺序组装：
+# 这样安装单位是「一个包」，与 dsh-openmaic 的单行 patch 形态一致。
+#
+# `listen: true` 让插件在被 dsh 装载后自行监听 HTTP 端口（仅提供 API；前端为独立包
+# `OpenTeach-frontend`，由其 Next.js 服务通过 OPENTEACH_API_BASE 反向代理到本后端），
+# 无需外部宿主代为 app.listen；端口可用 OPENTEACH_PORT 覆盖。
+#
+# `envPath` / `llmConfigPath` 指向本地凭据与 provider 配置（相对进程工作目录解析，
+# 因此请在仓库根 `OpenTeach/` 下启动 dsh）。两个文件缺失时会静默回落：凭据缺失 →
+# llm 插件降级为 mock；llm.config.json 缺失 → 使用内置 DeepSeek 默认。可用
+# `OPENTEACH_ENV_PATH` / `OPENTEACH_LLM_CONFIG` 覆盖为绝对路径。
+- insert:
+    - id: openteach
+      name: '@openteach/bundle'
+      config:
+        listen: true
+        envPath: ./.env.local
+        llmConfigPath: ./llm.config.json

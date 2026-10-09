@@ -1,0 +1,26 @@
+{
+  "name": "@openteach/plugin-http",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/http/plugin.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@openteach/plugin-classroom": "workspace:*",
+    "@openteach/plugin-db": "workspace:*",
+    "@openteach/plugin-llm": "workspace:*",
+    "@openteach/plugin-slide": "workspace:*",
+    "@openteach/plugin-storage": "workspace:*",
+    "@openteach/shared": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

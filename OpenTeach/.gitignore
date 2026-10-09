@@ -1,0 +1,13 @@
+# 依赖与构建缓存（本包可独立成仓，node_modules 不入库）。
+node_modules/
+
+# openmaic-core 的 esbuild 产物已由组装层 tsdown 内联进 lib/index.js，运行期不需要它，
+# 故不入库（约 14MB 的冗余构建物）。组装层自己的 lib/ 需要入库，供 dsh 直接从 git 安装。
+packages/openmaic-core/lib/
+
+# 本地运行期数据（SQLite 库文件）。
+data/
+
+# 本地凭据：只提交空值模板 .env.example，真实值不入库。
+.env
+.env.local

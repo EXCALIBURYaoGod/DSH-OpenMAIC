@@ -7,6 +7,7 @@ node_modules/
 deepseek-harness/.git.bak/
 OpenMAIC/.git.bak/
 edu-loop-mvp/.git.bak/
+OpenTeach/.git.bak/
 
 # 根级环境与日志兜底
 .env

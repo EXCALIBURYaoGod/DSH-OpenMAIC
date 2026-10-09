@@ -1,0 +1,14 @@
+{
+  "name": "@openteach/plugin-storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/plugin.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@openmaic/dsl": "file:../../../OpenMAIC/packages/@openmaic/dsl",
+    "@openteach/plugin-db": "workspace:*"
+  }
+}

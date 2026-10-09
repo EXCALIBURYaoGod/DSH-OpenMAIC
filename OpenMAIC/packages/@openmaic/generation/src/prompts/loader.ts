@@ -12,6 +12,20 @@ import type { LoadedPrompt, PromptId, PromptVariableDefaults, SnippetId } from '
 // mistake the Markdown directory for a statically imported module asset.
 const DEFAULT_PROMPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+/**
+ * Resolve the prompt asset base directory, honouring `OPENMAIC_PROMPTS_DIR`.
+ *
+ * Resolved per call rather than at module init: when this module is inlined
+ * into a single-file bundle, `import.meta.url` no longer sits two levels below
+ * the package root and {@link DEFAULT_PROMPTS_DIR} would point outside the
+ * package. A bundled consumer sets `OPENMAIC_PROMPTS_DIR` at start-up to its
+ * own copy of `templates/` + `snippets/`.
+ */
+function resolvePromptsDir(): string {
+  const override = process.env.OPENMAIC_PROMPTS_DIR?.trim();
+  return override ? resolve(override) : DEFAULT_PROMPTS_DIR;
+}
+
 const PROMPT_VARIABLE_DEFAULTS = {
   'pbl-actions': {
     projectSummary:
@@ -26,7 +40,7 @@ function isMissingFileError(error: unknown): boolean {
 /** Load a snippet by ID. */
 export function loadSnippet(
   snippetId: SnippetId,
-  promptsDir: string = DEFAULT_PROMPTS_DIR,
+  promptsDir: string = resolvePromptsDir(),
 ): string {
   const snippetPath = join(promptsDir, 'snippets', `${snippetId}.md`);
 
@@ -41,7 +55,7 @@ export function loadSnippet(
 /** Replace snippet includes with their file content. */
 export function processSnippets(
   template: string,
-  promptsDir: string = DEFAULT_PROMPTS_DIR,
+  promptsDir: string = resolvePromptsDir(),
 ): string {
   return template.replace(/\{\{snippet:(\w[\w-]*)\}\}/g, (_, snippetId) => {
     return loadSnippet(snippetId as SnippetId, promptsDir);
@@ -64,7 +78,7 @@ export function processConditionalBlocks(
 /** Load a prompt by ID. */
 export function loadPrompt(
   promptId: PromptId,
-  promptsDir: string = DEFAULT_PROMPTS_DIR,
+  promptsDir: string = resolvePromptsDir(),
 ): LoadedPrompt | null {
   const promptDir = join(promptsDir, 'templates', promptId);
   const systemPath = join(promptDir, 'system.md');
@@ -126,7 +140,7 @@ function applyPromptVariableDefaults(
 export function buildPrompt(
   promptId: PromptId,
   variables: Record<string, unknown>,
-  promptsDir: string = DEFAULT_PROMPTS_DIR,
+  promptsDir: string = resolvePromptsDir(),
 ): { system: string; user: string } | null {
   const prompt = loadPrompt(promptId, promptsDir);
   if (!prompt) return null;

@@ -1,0 +1,15 @@
+{
+  "name": "@openteach/plugin-db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./repo": "./src/repo.ts",
+    "./sqlite": "./src/sqlite.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}
