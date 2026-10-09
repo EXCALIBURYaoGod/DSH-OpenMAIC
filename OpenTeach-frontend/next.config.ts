@@ -13,6 +13,10 @@ const isVercelBuild = Boolean(process.env.VERCEL);
 const openTeachApiBase = process.env.OPENTEACH_API_BASE?.trim().replace(/\/+$/, '');
 
 const nextConfig: NextConfig = {
+  // Pin the project root so Next does not walk up to /workspace (a multi-repo
+  // directory far larger than this app). Without this, tracing and file watching
+  // escape the project directory.
+  outputFileTracingRoot: process.cwd(),
   env: {
     // Pin even the unset/default value in both client and server bundles.
     // A runtime-only override must not disable the route the built client uses.
@@ -46,6 +50,186 @@ const nextConfig: NextConfig = {
   typescript: {
     tsconfigPath: process.env.NODE_ENV === 'production' ? 'tsconfig.build.json' : 'tsconfig.json',
   },
+  // Sandbox constraints: the OS inotify watch limit is low and read-only here,
+  // so Turbopack's native watcher aborts with "OS file watch limit reached".
+  // Running `next dev --webpack` with watchOptions.poll avoids inotify entirely.
+  // The client-side `fs: false` fallback keeps `await import('fs')` (guarded by
+  // `typeof window === 'undefined'` in comfyui-workflows.ts / the ComfyUI
+  // adapter) resolvable instead of failing with "Can't resolve 'fs'".
+  webpack: (config, { dev, isServer, nextRuntime, webpack }) => {
+    // Source maps are the single largest avoidable string allocation during a
+    // dev compile; dropping them keeps peak memory under the 4 GiB cap.
+    if (dev) config.devtool = false;
+    // Sandbox memory budget (4 GiB cgroup) vs. this app's many-module client
+    // graph: the first compile of `/` alone needs ~3.7 GiB. Two avoidable
+    // consumers tip it over and are dropped here in dev only:
+    //   1. webpack's in-memory cache keeps a serialized copy of every module,
+    //      which is hundreds of MB for a graph this size (HMR rebuilds get
+    //      slower, but the first compile must fit);
+    //   2. the export/usage analyses allocate per-module `ExportsInfo` maps
+    //      that scale with the graph. They are pure optimizations, so skipping
+    //      them changes nothing functionally in a dev build.
+    if (dev) {
+      config.cache = false;
+      config.optimization = {
+        ...config.optimization,
+        providedExports: false,
+        usedExports: false,
+        innerGraph: false,
+        concatenateModules: false,
+        sideEffects: false,
+        mangleExports: false,
+        emitOnErrors: true,
+      };
+    }
+    // `nextRuntime === 'edge'` is the key case: the Edge bundle has no window
+    // (so the `typeof window === 'undefined'` guard does not eliminate the
+    // branch) yet also has no `fs`/`path`, so those dynamic imports must
+    // resolve to an empty module there.
+    if (!isServer || nextRuntime === 'edge') {
+      config.resolve = config.resolve ?? {};
+      // Node builtins reachable from server-only modules (the agent runtime
+      // that `instrumentation.ts` pulls in, media/pdf adapters, …). They must
+      // resolve to an empty module in the Edge/browser bundles, where the
+      // `NEXT_RUNTIME === 'nodejs'`-gated code paths that use them never run.
+      config.resolve.fallback = {
+        ...(config.resolve.fallback ?? {}),
+        fs: false,
+        path: false,
+        crypto: false,
+        os: false,
+        stream: false,
+        util: false,
+        events: false,
+        assert: false,
+        url: false,
+        buffer: false,
+        string_decoder: false,
+        timers: false,
+        punycode: false,
+        child_process: false,
+        worker_threads: false,
+        net: false,
+        tls: false,
+        dns: false,
+        http: false,
+        https: false,
+        http2: false,
+        zlib: false,
+        readline: false,
+        tty: false,
+        v8: false,
+        vm: false,
+        module: false,
+        repl: false,
+        cluster: false,
+        dgram: false,
+        inspector: false,
+        async_hooks: false,
+        perf_hooks: false,
+        querystring: false,
+        domain: false,
+        constants: false,
+        trace_events: false,
+        console: false,
+        sqlite: false,
+        test: false,
+        sea: false,
+        sys: false,
+        wasi: false,
+        diagnostics_channel: false,
+        'fs/promises': false,
+        'stream/promises': false,
+        'stream/web': false,
+        'stream/consumers': false,
+        'dns/promises': false,
+        'readline/promises': false,
+        'timers/promises': false,
+        'util/types': false,
+        'assert/strict': false,
+        'inspector/promises': false,
+        'path/posix': false,
+        'path/win32': false,
+        'test/reporters': false,
+      };
+      // `import('node:child_process')` etc. use the `node:` URI scheme, which
+      // webpack's resolver does not route through `resolve.fallback` (it raises
+      // UnhandledSchemeError instead). Strip the prefix so the fallbacks above
+      // handle them. `resolve.fallback: false` yields an empty module (named
+      // imports become `undefined`) without the hard "not exported" error a
+      // `data:` stub would raise — and the callers are gated on the Node
+      // runtime, so they never execute in the Edge/browser bundles.
+      config.plugins = config.plugins ?? [];
+      config.plugins.push(
+        new webpack.NormalModuleReplacementPlugin(/^node:/, (resource) => {
+          resource.request = resource.request.replace(/^node:/, '');
+        }),
+      );
+    }
+    // The Edge build of `instrumentation.ts` is what actually OOMs: unlike the
+    // Node build, `serverExternalPackages` does not apply there, so webpack
+    // would bundle the entire agent runtime (pi-ai, ali-oss, undici, pdf and
+    // media SDKs, …) into the Edge bundle just to prove it resolves. Those
+    // imports sit behind the `NEXT_RUNTIME === 'nodejs'` early-return and are
+    // never loaded in Edge, so externalise them and skip the traversal — this
+    // is the difference between ~4 GB and a few hundred MB of peak heap.
+    if (nextRuntime === 'edge') {
+      const EDGE_EXTERNAL_PREFIXES = [
+        '@earendil-works',
+        '@openmaic',
+        '@alicloud',
+        '@aws-sdk',
+        '@aws-crypto',
+        '@modelcontextprotocol',
+        '@langchain',
+        '@copilotkit',
+        '@napi-rs',
+        '@electric-sql',
+        '@mozilla',
+        'copilotkit',
+        'undici',
+        'pg',
+        'sharp',
+        'pptxgenjs',
+        'pptxtojson',
+        'unpdf',
+        'pdf-lib',
+        'docx',
+        'exceljs',
+        'shiki',
+        'echarts',
+        'katex',
+        'sanitize-html',
+        'jszip',
+        'linkedom',
+        'ai',
+        '@ai-sdk',
+        'openai',
+      ];
+      const existingExternals = config.externals
+        ? Array.isArray(config.externals)
+          ? config.externals
+          : [config.externals]
+        : [];
+      config.externals = [
+        ...existingExternals,
+        ({ request }, callback) => {
+          if (!request) return callback();
+          const isHeavy = EDGE_EXTERNAL_PREFIXES.some(
+            (prefix) => request === prefix || request.startsWith(`${prefix}/`),
+          );
+          return isHeavy ? callback(null, `commonjs ${request}`) : callback();
+        },
+      ];
+    }
+    config.watchOptions = {
+      ...(config.watchOptions ?? {}),
+      ignored: ['**/node_modules/**', '**/.git/**', '**/.next/**'],
+      poll: 2000,
+      aggregateTimeout: 500,
+    };
+    return config;
+  },
   transpilePackages: ['mathml2omml', 'pptxgenjs', '@openmaic/importer'],
   // These agent packages do a runtime `import(specifier)` with a computed
   // specifier (to lazily load node:fs/os/path without breaking browser/Vite
@@ -58,6 +242,10 @@ const nextConfig: NextConfig = {
     '@earendil-works/pi-ai',
     '@earendil-works/pi-agent-core',
     '@openmaic/generation',
+    // `pg` (and its optional native binding, which is absent here) is only ever
+    // used server-side; loading it natively keeps it out of the bundled server
+    // graph and silences the "Can't resolve 'pg-native'" warning.
+    'pg',
     // Optional peers of @openmaic/storage, reached through deliberately
     // untraced dynamic imports. Externalizing keeps them out of the bundle,
     // and the static anchor in lib/persistence/asset-byte-store.ts gets them
@@ -67,6 +255,14 @@ const nextConfig: NextConfig = {
     '@aws-sdk/s3-request-presigner',
   ],
   experimental: {
+    // The sandbox caps the container at 4 GiB and the many-module client graph
+    // otherwise peaks above it (OOM-killed mid-compile). This trades build CPU
+    // for a smaller webpack peak heap, which is what we need here.
+    webpackMemoryOptimizations: true,
+    // The dev server otherwise preloads every page's modules at boot, which
+    // for this app is a large fixed footprint before a single request arrives.
+    // Load routes on demand instead — the first request pays the cost.
+    preloadEntriesOnStart: false,
     proxyClientMaxBodySize: '200mb',
     // Next 的 rewrite 代理默认把上游请求限在 30s
     // （next/dist/server/lib/router-utils/proxy-request.js:
