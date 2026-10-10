@@ -1,7 +1,0 @@
-packages:
-  - 'server'
-
-# pnpm 10+ 默认不执行依赖的构建脚本，未获批准的包会让安装直接失败（strictDepBuilds）。
-# esbuild 的 postinstall 用于校验/落地平台二进制，tsx 依赖它，这里显式放行。
-allowBuilds:
-  esbuild: true

@@ -6,7 +6,6 @@ node_modules/
 # 嵌套仓库 git 历史备份（不移除文件本身，仅不入库）
 deepseek-harness/.git.bak/
 OpenMAIC/.git.bak/
-edu-loop-mvp/.git.bak/
 OpenTeach/.git.bak/
 # OpenTeach 运行期提示词软链：bundle 按 cwd/lib/prompts 读取，指向 assets/prompts
 OpenTeach/lib/prompts/
