@@ -15,11 +15,16 @@
  * 类配置（llm / db / env / webDist）都可由环境变量兜底，使本包在没有 edu-loop
  * 宿主注入时也能独立安装运行（`config.listen` 为真时自行监听 HTTP 端口）。
  *
+ * LLM 配置来源：在 dsh 宿主内运行时**完全沿用 dsh 的 LLM 配置**——`@openteach/plugin-llm`
+ * 反向适配宿主的 `ctx.llm`（provider 路由、端点、模型目录与凭据全部由 dsh 掌管，见其
+ * `dsh-host.ts`），本包不再桥接或复制凭据。仅当本包独立安装运行（无 dsh 内核）时，才
+ * 按 `llmConfigPath` / 内置默认装配本地 provider。
+ *
  * @module bundle
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Server } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -49,11 +54,11 @@ export const name = 'openteach'
 export interface Config {
   /** 已解析的 `llm.config.json` 内容（provider 路由与默认模型）。省略时读 `llmConfigPath` / `OPENTEACH_LLM_CONFIG` / 内置默认。 */
   llm?: LlmConfig
-  /** `llm.config.json` 路径；提供时从中读取 provider 配置。 */
+  /** `llm.config.json` 路径；提供时从中读取 provider 配置。相对路径按本包根目录解析。 */
   llmConfigPath?: string
   /** SQLite 库文件路径（db 模块）。省略时读 `OPENTEACH_DB_PATH`，再退到 `<cwd>/data/openteach.db`。 */
   dbFilePath?: string
-  /** `.env` 文件路径；提供时在装配前载入（凭据经环境变量注入 provider）。省略时读 `OPENTEACH_ENV_PATH`。 */
+  /** `.env` 文件路径；提供时在装配前载入（凭据经环境变量注入 provider）。省略时读 `OPENTEACH_ENV_PATH`。相对路径按本包根目录解析。 */
   envPath?: string
   /** 运行模式；省略时按 `NODE_ENV` 解析。 */
   mode?: AppMode
@@ -100,12 +105,19 @@ const DEFAULT_LLM_CONFIG: LlmConfig = {
   },
 }
 
-/** 解析 provider 配置：显式传入 > 配置文件路径 > 内置默认。 */
+/**
+ * 解析 provider 配置。优先级：显式传入 > 配置文件路径 > 内置默认。
+ *
+ * 注意：在 dsh 宿主内运行时本函数的结果**不生效**——`@openteach/plugin-llm` 会反向
+ * 适配宿主的 `ctx.llm`（方案 B），provider 路由与凭据全部由 dsh 掌管。此处的本地
+ * 配置只服务于「本包独立安装运行」这一场景。
+ */
 function resolveLlmConfig(config: Config): LlmConfig {
   if (config.llm !== undefined && config.llm !== null) return config.llm
-  const path = nonEmpty(config.llmConfigPath) ?? nonEmpty(process.env.OPENTEACH_LLM_CONFIG)
-  if (path !== undefined && existsSync(path)) {
-    return JSON.parse(readFileSync(path, 'utf8')) as LlmConfig
+  const raw = nonEmpty(config.llmConfigPath) ?? nonEmpty(process.env.OPENTEACH_LLM_CONFIG)
+  if (raw !== undefined) {
+    const path = resolveLocalPath(raw)
+    if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8')) as LlmConfig
   }
   return DEFAULT_LLM_CONFIG
 }
@@ -113,6 +125,21 @@ function resolveLlmConfig(config: Config): LlmConfig {
 /** 非空字符串判定，用于把「未设置」与「空字符串」统一成 undefined。 */
 function nonEmpty(value: string | undefined): string | undefined {
   return value !== undefined && value !== '' ? value : undefined
+}
+
+/**
+ * 本包根目录（`lib/index.js` 的上一级）。
+ *
+ * 随包携带的资产与本地配置（`assets/`、`.env.local`、`llm.config.json`）按它定位，
+ * 而不是按进程 cwd：dsh 以 `pnpm dsh web` 从 harness checkout 启动时 cwd 是那个
+ * checkout，相对 cwd 的 `./.env.local` 会指向不存在的文件，并被 `loadDotEnv`
+ * 静默忽略——凭据与 `DATABASE_URL` 就此丢失且没有任何日志。
+ */
+const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** 相对路径按 {@link PKG_ROOT} 解析，绝对路径原样使用。 */
+function resolveLocalPath(value: string): string {
+  return isAbsolute(value) ? value : join(PKG_ROOT, value)
 }
 
 /** 显式 `mode` 的字面量校验；缺省或非法值按 `NODE_ENV` 解析。 */
@@ -123,11 +150,14 @@ function resolveMode(explicit: string | undefined): AppMode {
 }
 
 /**
- * 把随包携带的提示词资产目录告知 `@openmaic/generation`。
+ * 把随包携带的提示词资产目录告知两套提示词加载器。
  *
- * 该包的提示词加载器默认按 `import.meta.url` 上溯两级定位 `templates/` /
- * `snippets/`——只有它运行在自身 `dist/` 下时才成立。本 bundle 把它内联进单文件
- * `lib/index.js`，上溯会落到包外，导致 `buildPrompt` 找不到模板而抛
+ * `@openmaic/generation` 的加载器默认按 `import.meta.url` 上溯两级定位
+ * `templates/` / `snippets/`——只有它运行在自身 `dist/` 下时才成立；openmaic-core
+ * 自己的 app 级加载器默认按 `process.cwd()/lib/prompts` 定位——只有 cwd 是前端
+ * 工程根时才成立。两者在本 bundle 里都不成立：前者被内联进单文件 `lib/index.js`，
+ * 上溯落到包外；后者的 cwd 是宿主（dsh）的启动目录，那里没有 `lib/prompts`，
+ * `interactive-outlines` 等模板全部读不到，生成接口只能返回 500
  * `Prompt template not found`。这里在装配前显式指定资产目录（构建时由
  * `packages/openmaic-core/build.mjs` 复制到 `assets/`）；宿主已显式设置时不覆盖。
  */
@@ -135,11 +165,15 @@ function configurePromptAssets(): void {
   const assets = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets')
   const prompts = join(assets, 'prompts')
   const promptsPbl = join(assets, 'prompts-pbl')
+  const libPrompts = join(assets, 'lib-prompts')
   if (nonEmpty(process.env.OPENMAIC_PROMPTS_DIR) === undefined && existsSync(prompts)) {
     process.env.OPENMAIC_PROMPTS_DIR = prompts
   }
   if (nonEmpty(process.env.OPENMAIC_PBL_PROMPTS_DIR) === undefined && existsSync(promptsPbl)) {
     process.env.OPENMAIC_PBL_PROMPTS_DIR = promptsPbl
+  }
+  if (nonEmpty(process.env.OPENMAIC_LIB_PROMPTS_DIR) === undefined && existsSync(libPrompts)) {
+    process.env.OPENMAIC_LIB_PROMPTS_DIR = libPrompts
   }
 }
 
@@ -156,7 +190,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void | (
   configurePromptAssets()
 
   const envPath = nonEmpty(config.envPath) ?? nonEmpty(process.env.OPENTEACH_ENV_PATH)
-  if (envPath !== undefined) loadDotEnv(envPath)
+  if (envPath !== undefined) loadDotEnv(resolveLocalPath(envPath))
 
   // 注意用 nonEmpty：schema 把 mode 的缺省值归一成空串，`??` 对空串不生效，
   // 否则空串会直接传给 http 插件，使开发分支（CORS）被跳过。

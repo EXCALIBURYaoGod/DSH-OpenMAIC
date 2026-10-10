@@ -20,9 +20,16 @@ const log = createLogger('PromptLoader');
 
 /**
  * Get the prompts directory path
+ *
+ * Resolved per call: in Next.js `process.cwd()` is the project root and holds
+ * `lib/prompts`, but the same code also runs inlined in the dsh plugin bundle,
+ * where cwd is whatever directory the harness was launched from and holds no
+ * such directory at all. The assembly layer therefore points
+ * `OPENMAIC_LIB_PROMPTS_DIR` at the copy shipped in the bundle's `assets/`.
  */
 function getPromptsDir(): string {
-  // In Next.js, use process.cwd() for the project root
+  const override = process.env.OPENMAIC_LIB_PROMPTS_DIR?.trim();
+  if (override) return override;
   return path.join(process.cwd(), 'lib', 'prompts');
 }
 

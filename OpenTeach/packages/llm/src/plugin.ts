@@ -7,10 +7,8 @@
  * Schema 校验后注入，缺省字段按 schema 回填。
  *
  * 命名：服务名为 `eduLlm` 而非 `llm`。原因是 DSH 的编排内核把 `llm` 这一名字绑定
- * 到它自己的 `LlmRuntime`（`dsh-llm` 的构造函数硬编码 `super(ctx, 'llm')`，且
- * `dsh-llm` 已 `declare module '@deepseek-ai/cordis'` 把 `Context.llm` 声明为
- * `LlmRuntime`）。本项目的 provider 运行时仍是真实模型出口，但需让出 `llm` 之名
- * 给 DSH 编排内核（见 `plugins/openmaic-classroom/dsh-kernel.ts` 的桥接）。
+ * 到它自己的 `LlmRuntime`。宿主内运行时 `eduLlm` 只是宿主 `ctx.llm` 的一层代理
+ * （方案 B，见 `./dsh-host.ts`）；独立运行时才自持 provider 适配器。
  *
  * @module llm/plugin
  */
@@ -18,7 +16,11 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { loadLlm, type LoadedLlm } from './loader.js'
+import { loadFromDshHost, probeDshLlm } from './dsh-host.js'
 import { PROVIDER_APIS, type LlmConfigFile, type ProviderProfile } from './config.js'
+
+/** provider profile 类型对外透出，供组装层（bundle）桥接 dsh 配置时构造路由。 */
+export type { LlmConfigFile, ModelProfile, ProviderProfile } from './config.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -79,19 +81,25 @@ export const Config = z.object({
   providers: z.dict(ProviderProfileSchema).required(),
 })
 
-export function apply(ctx: Context, config: Config): () => void {
-  const loaded = loadLlm(config as LlmConfigFile)
+/**
+ * 装配 `eduLlm` 服务。
+ *
+ * **宿主优先（方案 B）**：在 dsh 宿主内运行时，`eduLlm` 反向适配宿主的 `ctx.llm`
+ * （provider 路由、端点、模型目录、凭据全部由 dsh 掌管），本项目不再自持一份 LLM
+ * 配置。宿主不可用（独立运行、或等待超时）时回落 {@link loadLlm}：按 `llm.config.json`
+ * 或内置默认装配，无凭据的路由自动降级为 mock 适配器。
+ *
+ * apply 为异步：dsh 的 Loader 并行启动各条目，宿主 `ctx.llm` 可能稍后才激活，
+ * {@link probeDshLlm} 会做有界等待（独立运行时无 dsh 内核，立即返回，无额外延迟）。
+ */
+export async function apply(ctx: Context, config: Config): Promise<() => void> {
+  const host = await probeDshLlm(ctx)
+  const loaded = host === undefined
+    ? loadLlm(config as LlmConfigFile)
+    : await loadFromDshHost(ctx, host)
   ctx.provide('eduLlm', loaded)
 
-  const degraded = [...loaded.degradedProviders]
-  if (degraded.length > 0) {
-    console.warn(
-      `[llm] provider ${degraded.join('、')} 未解析到凭据，已降级为本地 mock 适配器（教学闭环仍可完整跑通）。`,
-    )
-    console.warn('[llm] 如需接入真实模型：复制 .env.example 为 .env.local 并填写对应的 API Key。')
-  }
-
-  // 释放对 runtime 的引用；`llm` 服务本身由 ctx.provide 的 disposer 随 fiber 回收。
+  // 释放对 runtime 的引用；`eduLlm` 服务本身由 ctx.provide 的 disposer 随 fiber 回收。
   return () => {
     console.log(`[llm] 已释放 provider=${loaded.defaultProvider} 的适配器引用`)
   }

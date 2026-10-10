@@ -15,7 +15,7 @@
  */
 
 import { build } from 'esbuild'
-import { cpSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -136,3 +136,22 @@ function copyDir(source, target) {
 copyDir(path.join(generationRoot, 'templates'), path.join(ASSETS, 'prompts', 'templates'))
 copyDir(path.join(generationRoot, 'snippets'), path.join(ASSETS, 'prompts', 'snippets'))
 copyDir(path.join(generationRoot, 'prompts-pbl'), path.join(ASSETS, 'prompts-pbl'))
+
+/**
+ * 复制 app 级提示词（OpenMAIC 仓库根的 `lib/prompts`）到 `assets/lib-prompts/`。
+ *
+ * 这套模板由 openmaic-core 自己的加载器读取（`src/lib/prompts/loader.ts`），它
+ * 原先按 `process.cwd()/lib/prompts` 定位——在 Next.js 里成立，但内联进 dsh 插件
+ * 后 cwd 是 harness 的启动目录，目录不存在，`interactive-outlines` 等模板全部
+ * 加载失败，生成接口只能以 `Prompt template not found` 收场。产物随包携带，
+ * 由组装层经 `OPENMAIC_LIB_PROMPTS_DIR` 指过来。
+ */
+// 该目录不在 `@openmaic/generation` 的解析链上（pnpm 把 file: 依赖复制进
+// `.pnpm/` 后，包的上游仓库根已不可达），故按 package.json 里 `file:../../../OpenMAIC`
+// 同款的相邻 checkout 布局定位，与 `generationRoot` 的用途保持一致。
+const libPrompts = path.resolve(HERE, '..', '..', '..', 'OpenMAIC', 'lib', 'prompts')
+if (!existsSync(libPrompts)) {
+  throw new Error(`openmaic-core: app-level prompts not found at ${libPrompts}`)
+}
+copyDir(path.join(libPrompts, 'templates'), path.join(ASSETS, 'lib-prompts', 'templates'))
+copyDir(path.join(libPrompts, 'snippets'), path.join(ASSETS, 'lib-prompts', 'snippets'))

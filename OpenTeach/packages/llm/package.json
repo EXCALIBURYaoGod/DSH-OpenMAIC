@@ -8,7 +8,8 @@
     "./loader": "./src/loader.ts",
     "./registry": "./src/registry.ts",
     "./types": "./src/types.ts",
-    "./dsh-adapter": "./src/dsh-adapter.ts"
+    "./dsh-adapter": "./src/dsh-adapter.ts",
+    "./dsh-host": "./src/dsh-host.ts"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

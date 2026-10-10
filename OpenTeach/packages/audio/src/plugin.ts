@@ -250,10 +250,6 @@ export function apply(ctx: Context): () => void {
   ctx.provide('openmaic.tts', tts)
   ctx.provide('openmaic.asr', asr)
 
-  if (!hasOpenKey) {
-    console.warn('[openmaic] 未配置 OPENAI_API_KEY，audio 仅开放 browser-native 桩；配置后可用 openai-tts / openai-whisper。')
-  }
-
   return () => {
     console.log('[openmaic] audio 插件停止')
   }

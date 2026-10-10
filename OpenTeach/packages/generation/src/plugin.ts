@@ -250,10 +250,6 @@ export function apply(ctx: Context, config: GenerationConfig = {}): () => void {
 
   ctx.provide('openmaic.generation', service)
 
-  if (source === 'mock') {
-    console.warn('[openmaic] generation 未接入真实模型凭据，降级为内置 outline 生成器（不阻断闭环）。')
-  }
-
   return () => {
     console.log(`[openmaic] generation 插件停止（source=${service.source}）`)
   }

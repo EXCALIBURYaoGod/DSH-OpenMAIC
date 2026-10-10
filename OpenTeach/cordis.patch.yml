@@ -10,10 +10,17 @@
 # `OpenTeach-frontend`，由其 Next.js 服务通过 OPENTEACH_API_BASE 反向代理到本后端），
 # 无需外部宿主代为 app.listen；端口可用 OPENTEACH_PORT 覆盖。
 #
-# `envPath` / `llmConfigPath` 指向本地凭据与 provider 配置（相对进程工作目录解析，
-# 因此请在仓库根 `OpenTeach/` 下启动 dsh）。两个文件缺失时会静默回落：凭据缺失 →
-# llm 插件降级为 mock；llm.config.json 缺失 → 使用内置 DeepSeek 默认。可用
-# `OPENTEACH_ENV_PATH` / `OPENTEACH_LLM_CONFIG` 覆盖为绝对路径。
+# `envPath` / `llmConfigPath` 指向本地凭据与 provider 配置（相对路径按**本包根目录**
+# 解析，绝对路径原样使用，与进程工作目录无关）。
+# 在 dsh 宿主内运行时，LLM 配置**完全沿用 dsh**：`@openteach/plugin-llm` 反向适配宿主
+# 的 `ctx.llm`（provider 路由、端点、模型目录与凭据全部由 dsh 掌管），此处两个路径仅在
+# 本包独立运行（无 dsh 内核）时生效，此时按 `llm.config.json` → 内置 DeepSeek 默认解析，
+# 凭据始终缺失则 llm 插件降级为 mock。可用 `OPENTEACH_ENV_PATH` / `OPENTEACH_LLM_CONFIG`
+# 指向绝对路径（未显式配置 envPath / llmConfigPath 时生效）。
+#
+# 本文件是 **bundle 层**的 patch（`package.json` 的 `dsh.bundle.patch`）。若希望以
+# **用户层插件**注册（不进入 profile 的 `dsh.profile.bundles`），把下面的 insert 行
+# 原样写入 `$DSH_HOME/profiles/<name>/cordis.patch.yml` 即可。
 - insert:
     - id: openteach
       name: '@openteach/bundle'
