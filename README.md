@@ -1,4 +1,4 @@
-# DSH-OpenMAIC
+# OpenTeach
 
 **基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）对 [OpenMAIC](https://github.com/THU-MAIC/OpenMAIC) 的重构。**
 
