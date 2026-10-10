@@ -57,6 +57,22 @@ interface DshAgentDefaultModel {
   currentSelection(): { provider: string; model: string }
 }
 
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * dsh settings 服务：某个 profile 条目的表单值、可用性或页面策略变化。
+     *
+     * 本包没有依赖 `@deepseek-ai/dsh-settings`（该服务只在 dsh 宿主内存在，独立运行时
+     * 不存在），故就地声明这个宿主事件；签名与宿主一致（`ns` 为条目 id，`revision`
+     * 为新修订号）。该事件不带 context filter，任何 fiber 的监听器都会收到。
+     */
+    'settings/document-updated'(ns: string, revision: number): void
+  }
+}
+
+/** `agent-default-model` 条目在 dsh settings 里的命名空间（即条目 id）。 */
+const DEFAULT_MODEL_SETTINGS_NS = 'agent-default-model'
+
 // ---------------------------------------------------------------------------
 // 协议翻译：edu ↔ DSH
 // ---------------------------------------------------------------------------
@@ -286,6 +302,11 @@ export function probeDshLlm(ctx: Context): Promise<DshLlmRuntime | undefined> {
  * `handle.replace()` 同步 edu 侧路由，并刷新 `config.providers` 与默认路由/模型，
  * 使冷启动竞态与运行期热插拔都能正确传播。
  *
+ * 默认模型选择（`agent-default-model`）另走 `settings/document-updated`：改选择**不动
+ * provider 拓扑**，因此 `llm/adapters-updated` 不会发；只订阅拓扑事件的话，edu 侧的
+ * 默认路由会一直停在旧值，直到下一次路由增删或进程重载。两条事件都触发 {@link sync}，
+ * 拓扑与选择因而都能在运行期传播。
+ *
  * 宿主实际拥有真实凭据与端点，故 `degradedProviders` 为空集。
  */
 export async function loadFromDshHost(ctx: Context, host: DshLlmRuntime): Promise<LoadedLlm> {
@@ -378,6 +399,13 @@ export async function loadFromDshHost(ctx: Context, host: DshLlmRuntime): Promis
   ctx.on('llm/adapters-updated', () => {
     void runSync().catch(() => {
       // 拓扑同步失败不应影响 `eduLlm` 的可用性：下次事件会重试。
+    })
+  })
+  // 默认模型选择变更（不动拓扑，故不发 `llm/adapters-updated`）：同样再同步一次。
+  ctx.on('settings/document-updated', (ns) => {
+    if (ns !== DEFAULT_MODEL_SETTINGS_NS) return
+    void runSync().catch(() => {
+      // 选择同步失败不应影响 `eduLlm` 的可用性：下次事件会重试。
     })
   })
   await runSync()
